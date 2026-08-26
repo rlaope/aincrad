@@ -23,6 +23,24 @@ def test_domain_event_is_an_explicit_dataclass_base_type() -> None:
     assert is_dataclass(DomainEvent)
 
 
+def test_dead_adventurer_actions_are_rejected_without_state_change() -> None:
+    world = make_world()
+    dead = replace(
+        world.adventurers["mira"],
+        stats=Stats(hp=0, max_hp=10, mp=3, max_mp=5),
+        alive=False,
+        death_tick=0,
+        death_cause="fallen_in_battle",
+    )
+    world = replace(world, adventurers={"mira": dead})
+
+    next_world, events = apply_intent(world, ActionIntent("mira", ActionKind.WAIT))
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].reason == "adventurer_dead"
+
+
 def make_world() -> WorldState:
     return WorldState(
         tick=0,

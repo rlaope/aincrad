@@ -4,8 +4,10 @@ from .models import (
     ActionKind,
     Activity,
     Adventurer,
+    CharacterClass,
     Location,
     LocationKind,
+    PartyState,
     Stats,
     WorldState,
 )
@@ -17,9 +19,11 @@ __all__ = [
     "ActionSucceeded",
     "Activity",
     "Adventurer",
+    "CharacterClass",
     "DomainEvent",
     "Location",
     "LocationKind",
+    "PartyState",
     "Stats",
     "WorldState",
 ]

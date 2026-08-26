@@ -9,9 +9,9 @@ from .models import (
     Activity,
     Adventurer,
     LocationKind,
-    Stats,
     WorldState,
 )
+from .progression import restore_stats
 
 
 def _rejected(
@@ -58,6 +58,8 @@ def apply_intent(
     adventurer = world.adventurers.get(intent.adventurer_id)
     if adventurer is None:
         return _rejected(world, intent, "unknown_adventurer")
+    if not adventurer.can_act:
+        return _rejected(world, intent, "adventurer_dead")
 
     if intent.action is ActionKind.MOVE:
         destination = intent.target_location_id
@@ -73,15 +75,10 @@ def apply_intent(
         )
 
     if intent.action is ActionKind.REST:
-        stats = adventurer.stats
-        restored = Stats(
-            hp=min(stats.max_hp, stats.hp + 2),
-            max_hp=stats.max_hp,
-            mp=min(stats.max_mp, stats.mp + 2),
-            max_mp=stats.max_mp,
-        )
         return _succeeded(
-            world, intent, replace(adventurer, stats=restored, activity=Activity.RESTING)
+            world,
+            intent,
+            replace(restore_stats(adventurer, hp=2, mp=2), activity=Activity.RESTING),
         )
 
     if intent.action is ActionKind.GATHER:
