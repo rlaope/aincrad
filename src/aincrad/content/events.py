@@ -287,14 +287,14 @@ LIFE_EVENT_CATALOG: tuple[LifeEventTemplate, ...] = (
         event_type=LifeEventType.COMPANION_RECRUITMENT,
         triggers={"quest_id": "echoes-at-emberfall", "relationship_at_least": 60},
         display_text_ko="레아가 당신의 동료로 합류했습니다.",
-        effects={"companion_id": "rhea-companion", "party_action": "add"},
+        effects={"companion_id": "rhea-vale", "party_action": "add"},
     ),
     LifeEventTemplate(
         id="companion-depart-rhea",
         event_type=LifeEventType.COMPANION_DEPARTURE,
-        triggers={"companion_id": "rhea-companion", "relationship_below": 20},
+        triggers={"companion_id": "rhea-vale", "relationship_below": 20},
         display_text_ko="레아가 결별을 선언하고 파티를 떠났습니다.",
-        effects={"companion_id": "rhea-companion", "party_action": "remove"},
+        effects={"companion_id": "rhea-vale", "party_action": "remove"},
     ),
     LifeEventTemplate(
         id="story-end-permanent-death",

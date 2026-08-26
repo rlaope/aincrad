@@ -14,7 +14,6 @@ from aincrad.content.events import (
     validate_life_event_catalog,
 )
 from aincrad.content.fixtures import load_world_fixture
-from aincrad.simulation.runtime import _COMPANION_ID
 
 ROOT = Path(__file__).parents[2]
 FIXTURE = ROOT / "fixtures" / "glassfrontier_world.json"
@@ -51,16 +50,16 @@ def test_companion_events_identify_companion_and_party_effects() -> None:
     }
 
     assert companion_events[LifeEventType.COMPANION_RECRUITMENT].effects == {
-        "companion_id": _COMPANION_ID,
+        "companion_id": "rhea-vale",
         "party_action": "add",
     }
     assert companion_events[LifeEventType.COMPANION_DEPARTURE].effects == {
-        "companion_id": _COMPANION_ID,
+        "companion_id": "rhea-vale",
         "party_action": "remove",
     }
     assert companion_events[LifeEventType.COMPANION_DEPARTURE].triggers[
         "companion_id"
-    ] == _COMPANION_ID == "rhea-companion"
+    ] == "rhea-vale"
 
 
 def test_permanent_death_ends_the_character_story() -> None:
