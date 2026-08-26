@@ -14,10 +14,12 @@
 ## 첫 프로토타입 범위
 
 - 시작 시 전사·궁수·마법사·탱커 중 주인공 1명 선택
+- 주인공 표시 이름은 사용자가 정하며 replay용 내부 ID `hero`와 분리
 - 파티는 주인공 1명으로 시작하며 동료 합류·이탈 이벤트 계약 지원
 - 마을 1개와 내부 시설 5종, 사냥터 1개, 10단계 던전과 보스방
-- 매시간 현재 파티원 각각의 행동을 선택한 뒤 일괄 판정
-- 모든 선택 화면의 마지막 항목에서 `AI 판단에 맡긴다` 지원
+- 매시간 사용자는 주인공만 조작하고 동료는 자신의 관찰 정보로 행동한 뒤 일괄 판정
+- 행동 화면의 마지막 항목에서 `AI 판단에 맡기기` 지원
+- 중앙 Story Director가 관찰 가능한 환경에서 퀘스트·영입·이탈 proposal을 제안
 - 이동, 휴식, 채집, 거래, 대기
 - 작업·일화·사실·사회·전략 기억
 - JSONL 이벤트 로그와 해시 체인 검증
@@ -36,19 +38,22 @@ uv sync --extra dev
 ## 실행
 
 ```bash
-# 기본 TUI: 시작하기 / 히스토리 / 종료
+# 기본 TUI: 방향키 또는 W/S로 이동하고 Enter로 선택
 uv run aincrad
 ```
 
 설치된 환경에서는 `aincrad`만 입력해도 같은 홈 화면이 열립니다. `시작하기`를
-선택하면 직업과 시간별 행동을 고르고, `히스토리`에서는 저장된 회차를 조회합니다.
-기본 히스토리 위치는 `runs/history`입니다.
+선택하면 직업과 표시 이름을 정한 뒤 주인공의 시간별 행동을 고릅니다. `히스토리`에서는
+저장된 회차를 조회합니다. 기본 히스토리는 `runs/history`, 홈에서 생성한 replay 로그는
+`runs/playthroughs`에 회차별로 보존됩니다. 인자 없는 실행은 TTY가 필요하며, 파이프나
+자동화 환경에서는 숫자 prompt로 전환하지 않고 `simulate --headless` 사용법을 안내합니다.
 
 자동 실행·재생·경로 지정이 필요하면 하위 명령을 사용합니다.
 
 ```bash
-# 캐릭터를 고르고 한 시간 직접 플레이 + 1회차 저장
-uv run aincrad simulate --seed 42 --hours 1 --history-root runs/history
+# 이름과 직업을 지정해 한 시간 자동 실행 + 1회차 저장
+uv run aincrad simulate --seed 42 --hours 1 --headless --class warrior \
+  --hero-name 한별 --history-root runs/history
 
 # 회차 목록과 상세 페이지
 uv run aincrad history list --history-root runs/history
@@ -65,10 +70,13 @@ uv run aincrad replay runs/demo/events.jsonl --verify-hash
 스키마만 검사하며, 해시 체인 무결성까지 확인하려면 `--verify-hash`를 사용합니다.
 
 현재 던전 1~10단계와 보스방은 이동 가능한 세계 구조와 콘텐츠 메타데이터까지
-구현되어 있습니다. 동료 합류·이탈, 영구 사망, 퀘스트, 보스 클리어 및 다음 층
-이벤트 카탈로그가 검증되며, 동료 합류·이탈과 성장·던전 위험·영구 사망은
-결정론적 runtime과 replay에 연결되어 있습니다. 실제 전투 명령, 보스 처치 판정 및
-퀘스트 보상은 다음 구현 단계입니다.
+구현되어 있습니다. 퀘스트 제안·완료와 동료 합류·이탈은 고정 시간표가 아니라 현재
+장소, 관찰된 행동, 관계 점수, 콘텐츠 catalog에서 생성된 Story proposal을 규칙 엔진이
+검증해 처리합니다. 확정 actor proposal, StoryIntent, 수락·거부 결과는 완료 tick 수와
+최종 world digest를 약정하는 `run_end` 포함 v2 해시 체인 로그에 저장됩니다. replay는
+AI policy나 Story Director를 다시 호출하지 않습니다. 성장,
+던전 위험, 영구 사망도 결정론적 runtime과 replay에 연결되어 있습니다. 실제 전투 명령,
+보스 처치 판정 및 퀘스트 보상은 다음 구현 단계입니다.
 
 구현 중인 CLI의 최신 옵션은 다음 명령으로 확인할 수 있습니다.
 
