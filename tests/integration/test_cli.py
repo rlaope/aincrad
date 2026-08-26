@@ -20,6 +20,7 @@ from aincrad.cli import (
     _prompt_for_intent,
     _run_hours,
     _starting_world,
+    build_parser,
     main,
 )
 from aincrad.domain import ActionIntent, ActionKind, CharacterClass
@@ -28,6 +29,31 @@ from aincrad.persistence import GENESIS_HASH, EventLog, StoredEvent
 from aincrad.simulation import SimulationScheduler, create_initial_world
 from aincrad.simulation.scheduler import SimulationResult as EngineSimulationResult
 from aincrad.tui import AdventurerView, EventView, RunSummary
+from aincrad.tui.keys import Key
+
+
+class Keys:
+    def __init__(self, *keys: Key) -> None:
+        self._keys = iter(keys)
+
+    def read_key(self) -> Key:
+        return next(self._keys)
+
+
+def _write_rehashed_v2_log(
+    target: Path,
+    records: tuple[StoredEvent, ...],
+    ticks: list[dict[str, object]],
+) -> None:
+    log = EventLog(target)
+    log.append(records[0].event)
+    last_tick = None
+    for tick in ticks:
+        last_tick = log.append(tick)
+    assert last_tick is not None
+    terminator = dict(records[-1].event)
+    terminator["last_tick_event_hash"] = last_tick.event_hash
+    log.append(terminator)
 
 
 def sample_result() -> SimulationResult:
@@ -38,21 +64,38 @@ def sample_result() -> SimulationResult:
     )
 
 
-def test_no_arguments_opens_home_menu_and_can_exit(tmp_path: Path) -> None:
+def test_simulate_parser_accepts_explicit_hero_name_option() -> None:
+    args = build_parser().parse_args(
+        [
+            "simulate",
+            "--seed",
+            "7",
+            "--hours",
+            "1",
+            "--headless",
+            "--class",
+            "warrior",
+            "--hero-name",
+            "한별",
+        ]
+    )
+
+    assert args.hero_name == "한별"
+
+
+def test_no_arguments_non_tty_fails_fast_with_headless_guidance(tmp_path: Path) -> None:
     stdout = StringIO()
 
     exit_code = main(
         [],
-        stdin=StringIO("3\n"),
+        stdin=StringIO(),
         stdout=stdout,
         home_history_root=tmp_path / "history",
     )
 
-    assert exit_code == 0
-    assert "The Glass Frontier" in stdout.getvalue()
-    assert "1. 시작하기" in stdout.getvalue()
-    assert "2. 히스토리" in stdout.getvalue()
-    assert "3. 종료" in stdout.getvalue()
+    assert exit_code == 2
+    assert "aincrad simulate --headless" in stdout.getvalue()
+    assert not any(prefix in stdout.getvalue() for prefix in ("1.", "2.", "3."))
 
 
 def test_home_start_reuses_interactive_simulation_path(tmp_path: Path) -> None:
@@ -76,7 +119,8 @@ def test_home_start_reuses_interactive_simulation_path(tmp_path: Path) -> None:
     exit_code = main(
         [],
         runner=runner,
-        stdin=StringIO("1\n3\n"),
+        key_reader=Keys(Key.ENTER, Key.DOWN, Key.DOWN, Key.ENTER),
+        stdin=StringIO(),
         stdout=stdout,
         home_history_root=history_root,
     )
@@ -102,7 +146,15 @@ def test_home_history_lists_and_opens_a_saved_run(tmp_path: Path) -> None:
 
     exit_code = main(
         [],
-        stdin=StringIO("2\n1\n3\n"),
+        key_reader=Keys(
+            Key.DOWN,
+            Key.ENTER,
+            Key.ENTER,
+            Key.DOWN,
+            Key.DOWN,
+            Key.ENTER,
+        ),
+        stdin=StringIO(),
         stdout=stdout,
         home_history_root=history_root,
     )
@@ -123,24 +175,13 @@ def test_interactive_projection_counts_dynamic_party_events(
         event_counts.append(summary.event_count)
         return ""
 
-    def dynamic_run(initial, *, seed, hours, chooser, observer=None):
+    def dynamic_run(initial, *, seed, hours, chooser, observer=None, **_):
         del seed, hours, chooser
         scheduler = SimulationScheduler(seed=7)
         world = initial
         assert world.party is not None
         hero_id = world.party.selected_hero_id
-        batches = (
-            (ActionIntent(hero_id, ActionKind.MOVE, target_location_id="mossreach"),),
-            (
-                ActionIntent(hero_id, ActionKind.WAIT),
-                ActionIntent("rhea-companion", ActionKind.WAIT),
-            ),
-            (
-                ActionIntent(hero_id, ActionKind.MOVE, target_location_id="emberfall"),
-                ActionIntent("rhea-companion", ActionKind.WAIT),
-            ),
-            (ActionIntent(hero_id, ActionKind.WAIT),),
-        )
+        batches = tuple((ActionIntent(hero_id, ActionKind.WAIT),) for _ in range(4))
         all_events = []
         for completed_hours, intents in enumerate(batches, start=1):
             hourly = scheduler.run_hour(world, intents)
@@ -160,11 +201,12 @@ def test_interactive_projection_counts_dynamic_party_events(
         output=None,
         force=False,
         character_class=CharacterClass.WARRIOR,
+        hero_name="별",
         stdin=StringIO(),
         stdout=StringIO(),
     )
 
-    assert event_counts == [1, 3, 5, 6]
+    assert event_counts == [1, 2, 3, 4]
 
 
 def test_simulate_injects_arguments_and_prints_projection(tmp_path: Path) -> None:
@@ -365,13 +407,13 @@ def test_replay_rejects_event_outcome_that_disagrees_with_engine(tmp_path: Path)
         force=False,
         character_class=CharacterClass.WARRIOR,
     )
-    event = dict(EventLog(valid_log).verify()[0].event)
-    details = [list(item) for item in event["details"]]
-    exp_index = next(index for index, item in enumerate(details) if item[0] == "exp")
-    details[exp_index][1] = "999"
-    event["details"] = details
+    records = EventLog(valid_log).verify()
+    tick = dict(records[1].event)
+    events = [dict(item) for item in tick["action_events"]]
+    events[0]["quantity"] = 999
+    tick["action_events"] = events
     event_log = tmp_path / "events.jsonl"
-    EventLog(event_log).append(event)
+    _write_rehashed_v2_log(event_log, records, [tick])
 
     with pytest.raises(ValueError, match="engine result"):
         _default_replay(event_log=event_log, verify_hash=True)
@@ -407,7 +449,7 @@ def test_prompt_always_lists_ai_delegation_last() -> None:
 
     assert selected in allowed
     assert selected.action is ActionKind.MOVE
-    assert selected.target_location_id == "mossreach"
+    assert selected.target_location_id == "emberfall-inn"
     lines = stdout.getvalue().splitlines()
     ai_option = next(line for line in lines if "AI 판단에 맡긴다" in line)
     assert ai_option.startswith(f"{len(allowed) + 1}.")
@@ -436,7 +478,7 @@ def test_two_hours_collect_one_action_from_each_adventurer() -> None:
 
 
 def test_interactive_new_run_selects_one_hero_then_runs_one_hour() -> None:
-    stdin = StringIO("1\n9\n")
+    stdin = StringIO("1\n별\n9\n")
     stdout = StringIO()
 
     exit_code = main(
@@ -458,8 +500,8 @@ def test_interactive_new_run_selects_one_hero_then_runs_one_hour() -> None:
 def test_starting_world_runtime_party_contains_only_selected_hero() -> None:
     world = _starting_world(CharacterClass.MAGE)
 
-    assert world.party.selected_hero_id == "hero-mage"
-    assert world.party.member_ids == ("hero-mage",)
+    assert world.party.selected_hero_id == "hero"
+    assert world.party.member_ids == ("hero",)
 
 
 def test_history_list_shows_monotonic_playthroughs(tmp_path: Path) -> None:
@@ -532,7 +574,7 @@ def test_history_show_renders_hourly_character_state(tmp_path: Path) -> None:
     assert "세이블 퀼 · 마법사" in rendered
     assert "1일차 00:00" in rendered
     assert "Lv.1" in rendered
-    assert "EXP 0" in rendered
+    assert "EXP " in rendered
     assert "HP 14" in rendered
     assert "MP 20" in rendered
 
@@ -610,7 +652,7 @@ def test_full_day_appends_24_hours_and_one_daily_summary(tmp_path: Path) -> None
 
 def test_run_hours_stops_immediately_after_selected_hero_dies() -> None:
     world = _starting_world(CharacterClass.MAGE)
-    hero = world.adventurers["hero-mage"]
+    hero = world.adventurers["hero"]
     fragile = replace(hero, location_id="mossreach", stats=replace(hero.stats, hp=1))
     world = replace(world, adventurers={fragile.id: fragile})
     calls: list[int] = []
@@ -631,11 +673,11 @@ def test_dead_hero_history_records_character_end_exactly_once(
 ) -> None:
     original_starting_world = _starting_world
 
-    def fragile_world(character_class: CharacterClass):
-        world = original_starting_world(character_class)
-        hero = next(iter(world.adventurers.values()))
+    def fragile_world(character_class: CharacterClass, hero_name: str | None = None):
+        world = original_starting_world(character_class, hero_name)
+        hero = world.adventurers["hero"]
         fragile = replace(hero, location_id="mossreach", stats=replace(hero.stats, hp=1))
-        return replace(world, adventurers={fragile.id: fragile})
+        return replace(world, adventurers={**world.adventurers, fragile.id: fragile})
 
     def enter_dungeon(world, actor_id: str) -> ActionIntent:
         del world
@@ -658,7 +700,7 @@ def test_dead_hero_history_records_character_end_exactly_once(
     timeline = HistoryArchive(history_root).load_run(1).timeline
     endings = [record for record in timeline if record.kind == "character_end"]
     assert len(endings) == 1
-    assert endings[0].payload["character_id"] == "hero-mage"
+    assert endings[0].payload["character_id"] == "hero"
     assert endings[0].payload["ending"] == "death"
 
 
@@ -677,16 +719,11 @@ def test_strict_replay_round_trips_all_four_classes(
     )
 
     records = EventLog(event_log).verify()
-    life_events = {
-        value
-        for record in records
-        if isinstance(record.event, dict)
-        for key, value in record.event.get("details", [])
-        if key == "life_event"
-    }
     replayed = _default_replay(event_log=event_log, verify_hash=True)
 
-    assert life_events >= {"companion-recruit-rhea", "companion-depart-rhea"}
+    assert records[0].event["record_type"] == "run_init"
+    assert all(record.event["record_type"] == "tick" for record in records[1:-1])
+    assert records[-1].event["record_type"] == "run_end"
     assert replayed.adventurers == simulated.adventurers
 
 
@@ -702,15 +739,11 @@ def test_strict_replay_rejects_incomplete_recruited_party_batch(tmp_path: Path) 
     )
     records = EventLog(complete_log).verify()
     incomplete_log = tmp_path / "incomplete.jsonl"
-    incomplete = EventLog(incomplete_log)
-    for record in records:
-        event = record.event
-        if isinstance(event, dict) and not (
-            event.get("tick") == 1 and event.get("adventurer_id") == "rhea-companion"
-        ):
-            incomplete.append(event)
+    ticks = [dict(record.event) for record in records[1:-1]]
+    ticks[0]["proposals"] = []
+    _write_rehashed_v2_log(incomplete_log, records, ticks)
 
-    with pytest.raises(ValueError, match="exactly one action"):
+    with pytest.raises(ValueError, match="canonical party order"):
         _default_replay(event_log=incomplete_log, verify_hash=True)
 
 
@@ -719,43 +752,49 @@ def test_strict_replay_rejects_records_after_selected_hero_dies(
 ) -> None:
     original_starting_world = _starting_world
 
-    def fragile_world(character_class: CharacterClass):
-        world = original_starting_world(character_class)
-        hero = next(iter(world.adventurers.values()))
-        fragile = replace(hero, stats=replace(hero.stats, hp=1))
-        return replace(world, adventurers={fragile.id: fragile})
+    def fragile_world(character_class: CharacterClass, hero_name: str | None = None):
+        world = original_starting_world(character_class, hero_name)
+        hero = world.adventurers["hero"]
+        fragile = replace(
+            hero,
+            location_id="mossreach",
+            stats=replace(hero.stats, hp=1),
+        )
+        return replace(world, adventurers={**world.adventurers, "hero": fragile})
 
     monkeypatch.setattr("aincrad.cli._starting_world", fragile_world)
-    scheduler = SimulationScheduler(seed=1)
-    world = fragile_world(CharacterClass.MAGE)
-    recruited = scheduler.run_hour(
-        world,
-        (
-            ActionIntent(
-                "hero-mage", ActionKind.MOVE, target_location_id="mossreach"
-            ),
+    monkeypatch.setattr(
+        "aincrad.cli._choose_ai_intent",
+        lambda world, actor_id: ActionIntent(
+            actor_id, ActionKind.MOVE, target_location_id="vault-1"
         ),
     )
-    death_batch = scheduler.run_hour(
-        recruited.final_state,
-        (
-            ActionIntent("hero-mage", ActionKind.MOVE, target_location_id="vault-1"),
-            ActionIntent("rhea-companion", ActionKind.WAIT),
-        ),
+    valid = tmp_path / "death.jsonl"
+    _default_run(
+        seed=1,
+        hours=3,
+        headless=True,
+        output=valid,
+        force=False,
+        character_class=CharacterClass.MAGE,
     )
-    assert death_batch.final_state.adventurers["hero-mage"].alive is False
-    assert death_batch.final_state.adventurers["rhea-companion"].alive is True
-    trailing_batch = scheduler.run_hour(
-        death_batch.final_state,
-        (ActionIntent("rhea-companion", ActionKind.WAIT),),
-    )
-    event_log = tmp_path / "trailing-after-hero-death.jsonl"
-    log = EventLog(event_log)
-    for event in (*recruited.events, *death_batch.events, *trailing_batch.events):
-        log.append(event)
+    records = EventLog(valid).verify()
+    assert len(records) == 3
+    trailing = EventLog(tmp_path / "trailing.jsonl")
+    init = dict(records[0].event)
+    init["expected_tick_count"] = 2
+    init["final_tick"] = 2
+    trailing.append(init)
+    trailing.append(records[1].event)
+    extra = trailing.append({"record_type": "tick", "version": 2, "tick": 1})
+    terminator = dict(records[-1].event)
+    terminator["expected_tick_count"] = 2
+    terminator["final_tick"] = 2
+    terminator["last_tick_event_hash"] = extra.event_hash
+    trailing.append(terminator)
 
     with pytest.raises(ValueError, match="selected hero.*dead"):
-        _default_replay(event_log=event_log, verify_hash=True)
+        _default_replay(event_log=trailing.path, verify_hash=True)
 
 
 def test_injected_legacy_runner_adapts_whole_days_without_none() -> None:

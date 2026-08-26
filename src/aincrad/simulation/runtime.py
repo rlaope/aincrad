@@ -13,7 +13,7 @@ from aincrad.domain import (
 )
 from aincrad.domain.progression import apply_damage, award_exp, recruit, remove, spend_mp
 
-_COMPANION_ID = "rhea-companion"
+_LEGACY_COMPANION_ID = "rhea-companion"
 _RECRUIT_EVENT = "companion-recruit-rhea"
 _DEPART_EVENT = "companion-depart-rhea"
 _DEATH_EVENT = "story-end-permanent-death"
@@ -90,10 +90,10 @@ def apply_action_progression(
     return after, replace(event, details=tuple(details))
 
 
-def apply_life_events(
+def apply_legacy_life_events(
     world: WorldState, events: tuple[DomainEvent, ...]
 ) -> tuple[WorldState, tuple[DomainEvent, ...]]:
-    """Apply deterministic membership effects only after the whole action batch."""
+    """Replay the removed v1 movement shortcut for backward-compatible logs only."""
     party = world.party
     if party is None:
         raise ValueError("world has no runtime party")
@@ -116,11 +116,11 @@ def apply_life_events(
     if (
         hero_event.action is ActionKind.MOVE
         and hero_event.target_location_id == "mossreach"
-        and _COMPANION_ID not in party.member_ids
+        and _LEGACY_COMPANION_ID not in party.member_ids
         and len(party.member_ids) < party.cap
     ):
         companion = Adventurer(
-            id=_COMPANION_ID,
+            id=_LEGACY_COMPANION_ID,
             name="Rhea Vale",
             location_id="mossreach",
             stats=Stats(24, 24, 8, 8),
@@ -146,11 +146,11 @@ def apply_life_events(
     elif (
         hero_event.action is ActionKind.MOVE
         and hero_event.target_location_id == "emberfall"
-        and _COMPANION_ID in party.member_ids
+        and _LEGACY_COMPANION_ID in party.member_ids
     ):
-        party = remove(party, _COMPANION_ID)
+        party = remove(party, _LEGACY_COMPANION_ID)
         adventurers = dict(world.adventurers)
-        del adventurers[_COMPANION_ID]
+        del adventurers[_LEGACY_COMPANION_ID]
         world = replace(world, adventurers=adventurers, party=party)
         changed_events[hero_event_index] = replace(
             hero_event,
@@ -158,7 +158,7 @@ def apply_life_events(
                 *hero_event.details,
                 ("life_event", _DEPART_EVENT),
                 ("party_action", "remove"),
-                ("companion_id", _COMPANION_ID),
+                ("companion_id", _LEGACY_COMPANION_ID),
             ),
         )
     return world, tuple(changed_events)

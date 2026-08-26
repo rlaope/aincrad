@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import os
 import sys
@@ -11,7 +12,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TextIO
 
-from aincrad.agents import BaselinePolicy, Observation, Perception, perceive
+from aincrad.agents import (
+    BaselinePolicy,
+    BaselineStoryDirector,
+    Observation,
+    Perception,
+    StoryDirector,
+    perceive,
+)
+from aincrad.content.events import LIFE_EVENT_CATALOG
 from aincrad.domain import (
     ActionIntent,
     ActionKind,
@@ -24,9 +33,17 @@ from aincrad.domain import (
     Stats,
     WorldState,
 )
+from aincrad.domain.identity import HERO_ID, HeroNameError, validate_hero_name
 from aincrad.domain.rules import apply_intent
+from aincrad.domain.story import (
+    StoryIntent,
+    StoryIntentKind,
+    StoryRecentEventView,
+    StoryResolution,
+    StoryState,
+)
 from aincrad.history import HistoryArchive
-from aincrad.persistence import MAX_RECORDS, EventLog, StoredEvent, to_json_value
+from aincrad.persistence import MAX_RECORDS, EventLog, StoredEvent, canonical_json, to_json_value
 from aincrad.simulation import (
     SimulationResult as EngineSimulationResult,
 )
@@ -34,7 +51,15 @@ from aincrad.simulation import (
     SimulationScheduler,
     create_initial_world,
 )
-from aincrad.simulation.runtime import apply_action_progression, apply_life_events
+from aincrad.simulation.runtime import (
+    apply_action_progression,
+    apply_legacy_life_events,
+)
+from aincrad.simulation.story import (
+    build_story_perception,
+    generate_story_candidates,
+    resolve_story_intent,
+)
 from aincrad.tui import (
     AdventurerView,
     EventView,
@@ -42,6 +67,10 @@ from aincrad.tui import (
     render_simulation,
     sanitize_terminal_text,
 )
+from aincrad.tui.keys import Key, KeyReader, PosixKeyReader
+from aincrad.tui.menu import MenuController, MenuOutcome
+from aincrad.tui.screens import MenuChoice, render_menu
+from aincrad.tui.terminal import AnsiScreen, RawTerminal
 
 
 @dataclass(frozen=True)
@@ -53,9 +82,50 @@ class SimulationResult:
 
 Runner = Callable[..., SimulationResult]
 ReplayRunner = Callable[..., SimulationResult]
-Chooser = Callable[[WorldState, str], ActionIntent]
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledAction:
+    intent: ActionIntent
+    controller: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if self.controller not in {"user", "baseline_policy", "test", "legacy"}:
+            raise ValueError("unsupported action controller")
+        if not self.reason_code or len(self.reason_code) > 64:
+            raise ValueError("reason_code must contain at most 64 characters")
+
+    @property
+    def actor_id(self) -> str:
+        return self.intent.adventurer_id
+
+
+@dataclass(frozen=True, slots=True)
+class TickTrace:
+    proposals: tuple[ControlledAction, ...]
+    action_events: tuple[DomainEvent, ...]
+    story_intent: StoryIntent
+    story_resolution: StoryResolution
+    facts: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CollaborativeResult:
+    final_state: WorldState
+    events: tuple[DomainEvent, ...]
+    proposals: tuple[ControlledAction, ...]
+    traces: tuple[TickTrace, ...]
+
+
+Chooser = Callable[[WorldState, str], ActionIntent | ControlledAction]
 HourObserver = Callable[[int, EngineSimulationResult], None]
+ContinueDecider = Callable[[WorldState], bool]
+TraceObserver = Callable[[int, TickTrace], None]
 _BASE_TIME = datetime(2025, 12, 31, 15, tzinfo=UTC)  # 2026-01-01 00:00 KST
+_INITIAL_RHEA_RELATIONSHIP = 55
+_OBJECTIVE_RELATIONSHIP_DELTA = 5
+_AI_CHOICE = object()
 _ACTION_LABELS = {
     "move": "이동",
     "rest": "휴식",
@@ -101,14 +171,73 @@ def _prompt_for_character(*, stdin: TextIO, stdout: TextIO) -> CharacterClass:
         stdout.write(f"1~{len(_CHARACTER_OPTIONS)} 사이의 번호를 입력하세요.\n")
 
 
-def _starting_world(character_class: CharacterClass) -> WorldState:
+def _select_menu(
+    title: str,
+    choices: Sequence[MenuChoice],
+    values: Sequence[object],
+    *,
+    key_reader: KeyReader,
+    stdout: TextIO,
+    allow_back: bool = False,
+    frame_writer: Callable[[str], None] | None = None,
+) -> object | None:
+    controller = MenuController(tuple(zip(choices, values, strict=True)))
+    while True:
+        frame = render_menu(
+            title,
+            choices,
+            controller.selected_index,
+            allow_back=allow_back,
+        )
+        if frame_writer is None:
+            stdout.write(frame)
+            stdout.flush()
+        else:
+            frame_writer(frame)
+        key = key_reader.read_key()
+        if key is Key.INTERRUPT:
+            raise KeyboardInterrupt
+        if key in {Key.EOF, Key.QUIT}:
+            return None
+        result = controller.handle_key(key)
+        if result is None:
+            continue
+        if result.outcome is MenuOutcome.BACK:
+            return None
+        assert result.value is not None
+        return result.value[1]
+
+
+def _prompt_for_character_menu(
+    *,
+    key_reader: KeyReader,
+    stdout: TextIO,
+    frame_writer: Callable[[str], None] | None = None,
+) -> CharacterClass | None:
+    choices = tuple(
+        MenuChoice(label, f"HP {stats.max_hp} · MP {stats.max_mp}")
+        for _, label, _, stats in _CHARACTER_OPTIONS
+    )
+    selected = _select_menu(
+        "직업 선택", choices, tuple(item[0] for item in _CHARACTER_OPTIONS),
+        key_reader=key_reader,
+        stdout=stdout,
+        allow_back=True,
+        frame_writer=frame_writer,
+    )
+    return selected if isinstance(selected, CharacterClass) else None
+
+
+def _starting_world(
+    character_class: CharacterClass, hero_name: str | None = None
+) -> WorldState:
     base = create_initial_world()
-    _, _, name, stats = next(
+    _, _, default_name, stats = next(
         option for option in _CHARACTER_OPTIONS if option[0] is character_class
     )
-    hero_id = f"hero-{character_class.value}"
+    name = validate_hero_name(default_name if hero_name is None else hero_name)
     hero = Adventurer(
-        id=hero_id,
+        id=HERO_ID,
         name=name,
         location_id="emberfall",
         stats=stats,
@@ -118,8 +247,8 @@ def _starting_world(character_class: CharacterClass) -> WorldState:
     return WorldState(
         base.tick,
         base.locations,
-        {hero_id: hero},
-        PartyState(hero_id, (hero_id,), cap=3),
+        {**base.adventurers, HERO_ID: hero},
+        PartyState(HERO_ID, (HERO_ID,), cap=3),
     )
 
 
@@ -178,45 +307,11 @@ def _intent_label(intent: ActionIntent, world: WorldState) -> str:
 
 
 def _choose_ai_intent(world: WorldState, actor_id: str) -> ActionIntent:
-    adventurer = world.adventurers[actor_id]
-    location = world.locations[adventurer.location_id]
-    allowed = _available_intents(world, actor_id)
+    """Delegate one actor using only that actor's detached perception."""
 
-    def matching(
-        action: ActionKind, target: str | None = None
-    ) -> ActionIntent | None:
-        return next(
-            (
-                intent
-                for intent in allowed
-                if intent.action is action
-                and (target is None or intent.target_location_id == target)
-            ),
-            None,
-        )
-
-    if adventurer.resources > 0:
-        trade = matching(ActionKind.TRADE)
-        if trade is not None:
-            return trade
-    if adventurer.location_id == "mossreach":
-        if adventurer.resources < 3:
-            gather = matching(ActionKind.GATHER)
-            if gather is not None:
-                return gather
-        return matching(ActionKind.MOVE, "emberfall") or BaselinePolicy().choose(
-            _perception(world, actor_id), allowed
-        )
-    if location.kind.value == "town":
-        destination = "mossreach" if adventurer.location_id == "emberfall" else "emberfall"
-        move = matching(ActionKind.MOVE, destination)
-        if move is not None:
-            return move
-    if location.stage is not None and not location.is_boss_room:
-        forward = matching(ActionKind.MOVE, f"vault-{location.stage + 1}")
-        if forward is not None:
-            return forward
-    return BaselinePolicy().choose(_perception(world, actor_id), allowed)
+    return BaselinePolicy().choose(
+        _perception(world, actor_id), _available_intents(world, actor_id)
+    )
 
 
 def _prompt_for_intent(
@@ -255,6 +350,60 @@ def _prompt_for_intent(
         stdout.write(f"1~{ai_index} 사이의 번호를 입력하세요.\n")
 
 
+def _prompt_for_intent_menu(
+    world: WorldState,
+    actor_id: str,
+    *,
+    key_reader: KeyReader,
+    stdout: TextIO,
+    frame_writer: Callable[[str], None] | None = None,
+) -> ControlledAction:
+    allowed = _available_intents(world, actor_id)
+    choices = tuple(MenuChoice(_intent_label(intent, world)) for intent in allowed) + (
+        MenuChoice("AI 판단에 맡기기", "현재 관찰 정보로 결정"),
+    )
+    selected = _select_menu(
+        f"{world.adventurers[actor_id].name}의 행동",
+        choices,
+        (*allowed, _AI_CHOICE),
+        key_reader=key_reader,
+        stdout=stdout,
+        allow_back=False,
+        frame_writer=frame_writer,
+    )
+    if selected is None:
+        raise EOFError("행동 선택이 취소되었습니다")
+    if selected is _AI_CHOICE:
+        return ControlledAction(
+            _choose_ai_intent(world, actor_id), "baseline_policy", "policy.baseline"
+        )
+    assert isinstance(selected, ActionIntent)
+    return ControlledAction(selected, "user", "user.selected")
+
+
+def _apply_objective_relationship(story: StoryState, objective_complete: bool) -> StoryState:
+    """Apply the explicit +5 objective delta, bounded to the 0..100 domain."""
+
+    if not objective_complete:
+        return story
+    score = story.relationship_score(HERO_ID, "rhea-vale")
+    if score is None:
+        raise ValueError("missing canonical Rhea relationship")
+    relationships = {
+        (source_id, target_id): relationship_score
+        for source_id, target_id, relationship_score in story.relationship_scores
+    }
+    relationships[(HERO_ID, "rhea-vale")] = min(
+        100, score + _OBJECTIVE_RELATIONSHIP_DELTA
+    )
+    return StoryState(
+        quest_states=story.quest_states,
+        relationship_scores=relationships,
+        resolved_candidate_ids=story.resolved_candidate_ids,
+        resolved_template_ids=story.resolved_template_ids,
+    )
+
+
 def _run_hours(
     initial: WorldState,
     *,
@@ -262,10 +411,20 @@ def _run_hours(
     hours: int,
     chooser: Chooser,
     observer: HourObserver | None = None,
-) -> EngineSimulationResult:
+    direct_hero_only: bool = False,
+    story_director: StoryDirector | None = None,
+    continue_decider: ContinueDecider | None = None,
+    trace_observer: TraceObserver | None = None,
+) -> CollaborativeResult:
+    """Run canonical hourly action batches followed by exactly one story decision."""
+
     world = initial
     events: list[DomainEvent] = []
+    proposals: list[ControlledAction] = []
+    traces: list[TickTrace] = []
     scheduler = SimulationScheduler(seed=seed)
+    director = story_director or BaselineStoryDirector()
+    story = StoryState(relationship_scores={(HERO_ID, "rhea-vale"): _INITIAL_RHEA_RELATIONSHIP})
     for completed_hours in range(1, hours + 1):
         party = world.party
         if party is None:
@@ -275,18 +434,115 @@ def _run_hours(
             for actor_id in party.member_ids
             if world.adventurers[actor_id].alive
         )
-        intents = tuple(chooser(world, actor_id) for actor_id in actor_ids)
-        hourly = scheduler.run_hour(world, intents)
-        world = hourly.final_state
+        controlled: list[ControlledAction] = []
+        for actor_id in actor_ids:
+            if direct_hero_only and actor_id != party.selected_hero_id:
+                selected = ControlledAction(
+                    _choose_ai_intent(world, actor_id),
+                    "baseline_policy",
+                    "policy.baseline",
+                )
+            else:
+                raw = chooser(world, actor_id)
+                selected = (
+                    raw
+                    if isinstance(raw, ControlledAction)
+                    else ControlledAction(raw, "legacy", "legacy.chooser")
+                )
+            if selected.actor_id != actor_id:
+                raise ValueError("chooser returned an action for another actor")
+            controlled.append(selected)
+        hourly = scheduler.run_hour(world, (item.intent for item in controlled))
+        action_world = hourly.final_state
+        hero = action_world.adventurers[party.selected_hero_id]
+        available_locations = (hero.location_id,)
+        available_quests = (
+            ("echoes-at-emberfall",)
+            if hero.location_id == "emberfall-quest-hall"
+            else ()
+        )
+        # Observable objective rule: a successful hero GATHER action while the
+        # resulting location is Mossreach completes echoes-at-emberfall.
+        objective_complete = any(
+            isinstance(event, ActionSucceeded)
+            and event.adventurer_id == party.selected_hero_id
+            and event.action is ActionKind.GATHER
+            and action_world.adventurers[event.adventurer_id].location_id == "mossreach"
+            for event in hourly.events
+        )
+        completed_objectives = (
+            ("echoes-at-emberfall",) if objective_complete else ()
+        )
+        story = _apply_objective_relationship(story, objective_complete)
+        recent = tuple(
+            StoryRecentEventView(
+                f"action-{event.tick}-{event.adventurer_id}",
+                event.tick,
+                "action_succeeded"
+                if isinstance(event, ActionSucceeded)
+                else "action_rejected",
+                (
+                    (
+                        "action",
+                        str(
+                            event.action.value
+                            if isinstance(event.action, ActionKind)
+                            else event.action
+                        ),
+                    ),
+                ),
+            )
+            for event in hourly.events
+        )
+        perception = build_story_perception(action_world, story, recent_events=recent)
+        candidates = generate_story_candidates(
+            action_world,
+            story,
+            LIFE_EVENT_CATALOG,
+            available_location_ids=available_locations,
+            available_quest_ids=available_quests,
+            completed_objective_quest_ids=completed_objectives,
+        )
+        selected_story = director.choose(perception, candidates)
+        resolution = resolve_story_intent(
+            action_world,
+            story,
+            selected_story,
+            LIFE_EVENT_CATALOG,
+            available_location_ids=available_locations,
+            available_quest_ids=available_quests,
+            completed_objective_quest_ids=completed_objectives,
+        )
+        world = resolution.world
+        story = resolution.story
+        facts = (
+            ("available_location_ids", available_locations),
+            ("available_quest_ids", available_quests),
+            ("completed_objective_quest_ids", completed_objectives),
+            (
+                "relationship_score",
+                (str(story.relationship_score(HERO_ID, "rhea-vale")),),
+            ),
+        )
+        trace = TickTrace(
+            tuple(controlled), hourly.events, selected_story, resolution, facts
+        )
+        traces.append(trace)
+        if trace_observer is not None:
+            trace_observer(completed_hours, trace)
+        proposals.extend(controlled)
         events.extend(hourly.events)
+        observed = EngineSimulationResult(world, hourly.events)
         if observer is not None:
-            observer(completed_hours, hourly)
-        party = world.party
-        if party is None:
+            observer(completed_hours, observed)
+        current_party = world.party
+        if current_party is None:
             raise ValueError("world has no runtime party")
-        if not world.adventurers[party.selected_hero_id].alive:
+        if not world.adventurers[current_party.selected_hero_id].alive:
             break
-    return EngineSimulationResult(world, tuple(events))
+        if continue_decider is not None and not continue_decider(world):
+            break
+    return CollaborativeResult(world, tuple(events), tuple(proposals), tuple(traces))
 
 
 def _non_negative_int(value: str) -> int:
@@ -318,6 +574,9 @@ def build_parser() -> argparse.ArgumentParser:
         dest="character_class",
         choices=tuple(character_class.value for character_class in CharacterClass),
         help="시작 직업: warrior, archer, mage, tank",
+    )
+    simulate.add_argument(
+        "--name", "--hero-name", dest="hero_name", help="주인공 표시 이름"
     )
     simulate.add_argument("--output", type=Path)
     simulate.add_argument("--history-root", type=Path)
@@ -362,6 +621,8 @@ def _event_view(event: DomainEvent, world: WorldState) -> EventView:
 
 
 def _adventurer_views(world: WorldState) -> tuple[AdventurerView, ...]:
+    party = world.party
+    visible_ids = party.member_ids if party is not None else tuple(world.adventurers)
     return tuple(
         AdventurerView(
             name=adventurer.name,
@@ -377,7 +638,7 @@ def _adventurer_views(world: WorldState) -> tuple[AdventurerView, ...]:
                 if character_class is adventurer.character_class
             ),
         )
-        for adventurer in sorted(world.adventurers.values(), key=lambda item: item.id)
+        for adventurer in (world.adventurers[actor_id] for actor_id in visible_ids)
     )
 
 
@@ -389,6 +650,20 @@ def _output_log_path(output: Path) -> Path:
     return output / "events.jsonl"
 
 
+def _next_home_log_path(log_root: Path) -> Path:
+    """Return the first unused monotonic home-playthrough path without creating it."""
+
+    for run_number in range(1, MAX_RECORDS + 1):
+        candidate = log_root / f"playthrough-{run_number:06d}.jsonl"
+        if not candidate.exists():
+            return candidate
+    raise ValueError("home playthrough log limit reached")
+
+
+def _world_digest(world: WorldState) -> str:
+    return hashlib.sha256(canonical_json(world).encode("utf-8")).hexdigest()
+
+
 def _default_run(
     *,
     seed: int,
@@ -398,9 +673,14 @@ def _default_run(
     output: Path | None,
     force: bool,
     character_class: CharacterClass | None = None,
+    hero_name: str | None = None,
     history_root: Path | None = None,
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
+    key_reader: KeyReader | None = None,
+    story_director: StoryDirector | None = None,
+    continue_decider: ContinueDecider | None = None,
+    frame_writer: Callable[[str], None] | None = None,
 ) -> SimulationResult:
     total_hours = hours if hours is not None else (days or 0) * 24
     if total_hours <= 0:
@@ -409,12 +689,40 @@ def _default_run(
     output_stream = stdout if stdout is not None else sys.stdout
     selected_class = character_class
     if selected_class is None:
-        selected_class = (
-            CharacterClass.WARRIOR
-            if headless
-            else _prompt_for_character(stdin=input_stream, stdout=output_stream)
-        )
-    initial = _starting_world(selected_class)
+        if headless:
+            selected_class = CharacterClass.WARRIOR
+        elif key_reader is not None:
+            selected_class = _prompt_for_character_menu(
+                key_reader=key_reader,
+                stdout=output_stream,
+                frame_writer=frame_writer,
+            )
+            if selected_class is None:
+                raise EOFError("직업 선택이 취소되었습니다")
+        else:
+            selected_class = _prompt_for_character(
+                stdin=input_stream, stdout=output_stream
+            )
+    if hero_name is None:
+        if headless:
+            hero_name = next(
+                default_name
+                for candidate, _, default_name, _ in _CHARACTER_OPTIONS
+                if candidate is selected_class
+            )
+        elif isinstance(key_reader, PosixKeyReader):
+            hero_name = key_reader.read_text_line(output_stream, "주인공 이름: ")
+        else:
+            output_stream.write("주인공 이름: ")
+            output_stream.flush()
+            raw_name = input_stream.readline()
+            if raw_name == "":
+                raise EOFError("주인공 이름 입력이 종료되었습니다")
+            hero_name = raw_name
+    if hero_name is None:
+        raise AssertionError("hero name selection did not produce a name")
+    validated_name = validate_hero_name(hero_name)
+    initial = _starting_world(selected_class, validated_name)
     archive = HistoryArchive(history_root) if history_root is not None else None
     run_number = (
         archive.create_run(
@@ -426,31 +734,66 @@ def _default_run(
                     for candidate, label, _, _ in _CHARACTER_OPTIONS
                     if candidate is selected_class
                 ),
-                "hero_id": next(iter(initial.adventurers)),
-                "hero_name": next(iter(initial.adventurers.values())).name,
+                "hero_id": HERO_ID,
+                "hero_name": validated_name,
+                "event_log": str(output) if output is not None else "",
             }
         )
         if archive is not None
         else None
     )
 
-    def ai_chooser(world: WorldState, actor_id: str) -> ActionIntent:
-        return _choose_ai_intent(world, actor_id)
+    def ai_chooser(world: WorldState, actor_id: str) -> ControlledAction:
+        return ControlledAction(
+            _choose_ai_intent(world, actor_id),
+            "baseline_policy",
+            "policy.baseline",
+        )
 
     chooser: Chooser
     observers: list[HourObserver] = []
+    hourly_traces: dict[int, TickTrace] = {}
+
+    def remember_trace(completed_hours: int, trace: TickTrace) -> None:
+        hourly_traces[completed_hours] = trace
+
     if archive is not None and run_number is not None:
 
         def record_hour(
             completed_hours: int, hourly: EngineSimulationResult
         ) -> None:
+            trace = hourly_traces[completed_hours]
+            template = next(
+                (
+                    item
+                    for item in LIFE_EVENT_CATALOG
+                    if item.id == trace.story_resolution.event.template_id
+                ),
+                None,
+            )
+            story_projection = {
+                "kind": "story_resolution",
+                "scene": template.display_text_ko if template is not None else "이야기 흐름 유지",
+                "opportunity": trace.story_intent.kind.value,
+                "evidence_ids": [
+                    value
+                    for value in (
+                        trace.story_intent.candidate_id,
+                        trace.story_resolution.event.template_id,
+                    )
+                    if value is not None
+                ],
+            }
             archive.append_hourly(
                 run_number,
                 {
                     "day": (completed_hours - 1) // 24 + 1,
                     "hour": (completed_hours - 1) % 24,
                     "tick": completed_hours - 1,
-                    "events": [to_json_value(event) for event in hourly.events],
+                    "events": [
+                        *(to_json_value(event) for event in hourly.events),
+                        story_projection,
+                    ],
                     "party": [
                         {
                             "id": adventurer.id,
@@ -461,9 +804,13 @@ def _default_run(
                             "mp": adventurer.stats.mp,
                             "alive": adventurer.alive,
                         }
-                        for adventurer in sorted(
-                            hourly.final_state.adventurers.values(),
-                            key=lambda item: item.id,
+                        for adventurer in (
+                            hourly.final_state.adventurers[actor_id]
+                            for actor_id in (
+                                hourly.final_state.party.member_ids
+                                if hourly.final_state.party is not None
+                                else ()
+                            )
                         )
                     ],
                 },
@@ -475,7 +822,14 @@ def _default_run(
                         "day": completed_hours // 24,
                         "survivors": sum(
                             adventurer.alive
-                            for adventurer in hourly.final_state.adventurers.values()
+                            for adventurer in (
+                                hourly.final_state.adventurers[actor_id]
+                                for actor_id in (
+                                    hourly.final_state.party.member_ids
+                                    if hourly.final_state.party is not None
+                                    else ()
+                                )
+                            )
                         ),
                     },
                 )
@@ -486,9 +840,21 @@ def _default_run(
     else:
         rendered_event_count = 0
 
-        def interactive_chooser(world: WorldState, actor_id: str) -> ActionIntent:
-            return _prompt_for_intent(
-                world, actor_id, stdin=input_stream, stdout=output_stream
+        def interactive_chooser(world: WorldState, actor_id: str) -> ControlledAction:
+            if key_reader is not None:
+                return _prompt_for_intent_menu(
+                    world,
+                    actor_id,
+                    key_reader=key_reader,
+                    stdout=output_stream,
+                    frame_writer=frame_writer,
+                )
+            return ControlledAction(
+                _prompt_for_intent(
+                    world, actor_id, stdin=input_stream, stdout=output_stream
+                ),
+                "user",
+                "user.selected",
             )
 
         chooser = interactive_chooser
@@ -503,7 +869,7 @@ def _default_run(
                     _adventurer_views(hourly.final_state),
                     RunSummary(
                         seed,
-                        max(1, (total_hours + 23) // 24),
+                        max(1, (completed_hours + 23) // 24),
                         rendered_event_count,
                         f"{status} ({completed_hours}/{total_hours}시간)",
                     ),
@@ -525,11 +891,17 @@ def _default_run(
         hours=total_hours,
         chooser=chooser,
         observer=observe_hour if observers else None,
+        direct_hero_only=not headless,
+        story_director=story_director,
+        continue_decider=continue_decider,
+        trace_observer=remember_trace,
     )
     party = result.final_state.party
     if party is None:
         raise ValueError("world has no runtime party")
     selected_hero = result.final_state.adventurers[party.selected_hero_id]
+    completed_hours = result.final_state.tick - initial.tick
+    final_world_digest = _world_digest(result.final_state)
     if archive is not None and run_number is not None and not selected_hero.alive:
         archive.record_character_end(
             run_number,
@@ -551,8 +923,72 @@ def _default_run(
         temporary_path = Path(temporary_name)
         try:
             log = EventLog(temporary_path)
-            for event in result.events:
-                log.append(event)
+            log.append(
+                {
+                    "record_type": "run_init",
+                    "version": 2,
+                    "schema_version": 2,
+                    "rules_version": 1,
+                    "world_id": "glassfrontier",
+                    "seed": seed,
+                    "hero_id": HERO_ID,
+                    "hero_name": validated_name,
+                    "character_class": selected_class.value,
+                    "hero_control": "delegated" if headless else "interactive",
+                    "expected_tick_count": completed_hours,
+                    "final_tick": result.final_state.tick,
+                    "final_world_digest": final_world_digest,
+                }
+            )
+            last_tick_hash: str | None = None
+            for trace in result.traces:
+                stored_tick = log.append(
+                    {
+                        "record_type": "tick",
+                        "version": 2,
+                        "tick": trace.story_intent.tick - 1,
+                        "proposals": [
+                            {
+                                "actor_id": proposal.actor_id,
+                                "action": proposal.intent.action.value
+                                if isinstance(proposal.intent.action, ActionKind)
+                                else str(proposal.intent.action),
+                                "target_location_id": proposal.intent.target_location_id,
+                                "quantity": proposal.intent.quantity,
+                                "controller": proposal.controller,
+                                "reason_code": proposal.reason_code,
+                            }
+                            for proposal in trace.proposals
+                        ],
+                        "action_events": [
+                            to_json_value(event) for event in trace.action_events
+                        ],
+                        "story_facts": {key: list(values) for key, values in trace.facts},
+                        "story_intent": to_json_value(trace.story_intent),
+                        "story_resolution": {
+                            "event": to_json_value(trace.story_resolution.event),
+                            "story": to_json_value(trace.story_resolution.story),
+                            "party_member_ids": list(
+                                trace.story_resolution.world.party.member_ids
+                                if trace.story_resolution.world.party is not None
+                                else ()
+                            ),
+                        },
+                    }
+                )
+                last_tick_hash = stored_tick.event_hash
+            if last_tick_hash is None:
+                raise ValueError("versioned runs require at least one completed tick")
+            log.append(
+                {
+                    "record_type": "run_end",
+                    "version": 2,
+                    "expected_tick_count": completed_hours,
+                    "final_tick": result.final_state.tick,
+                    "final_world_digest": final_world_digest,
+                    "last_tick_event_hash": last_tick_hash,
+                }
+            )
             with temporary_path.open("rb") as stream:
                 os.fsync(stream.fileno())
             if force:
@@ -561,11 +997,15 @@ def _default_run(
                 os.link(temporary_path, event_path)
         finally:
             temporary_path.unlink(missing_ok=True)
+    final_status = "완료" if completed_hours == total_hours else "홈으로 종료"
     return SimulationResult(
         events=tuple(_event_view(event, result.final_state) for event in result.events),
         adventurers=_adventurer_views(result.final_state),
         summary=RunSummary(
-            seed, max(1, (total_hours + 23) // 24), len(result.events), "완료"
+            seed,
+            max(1, (completed_hours + 23) // 24),
+            len(result.events),
+            final_status,
         ),
     )
 
@@ -701,9 +1141,265 @@ def _stored_event_view(record: StoredEvent, world: WorldState) -> EventView:
     return EventView(_BASE_TIME + timedelta(hours=tick), label, message)
 
 
+def _strict_replay_v2(
+    records: tuple[StoredEvent, ...], *, hash_verified: bool
+) -> SimulationResult:
+    if len(records) < 3:
+        raise ValueError("versioned replay requires run initialization, ticks, and run terminator")
+    init = records[0].event
+    if not isinstance(init, dict) or set(init) != {
+        "record_type",
+        "version",
+        "schema_version",
+        "rules_version",
+        "world_id",
+        "seed",
+        "hero_id",
+        "hero_name",
+        "character_class",
+        "hero_control",
+        "expected_tick_count",
+        "final_tick",
+        "final_world_digest",
+    }:
+        raise ValueError("invalid versioned run initialization")
+    if (
+        init["record_type"] != "run_init"
+        or init["version"] != 2
+        or init["schema_version"] != 2
+        or init["rules_version"] != 1
+        or init["world_id"] != "glassfrontier"
+        or init["hero_id"] != HERO_ID
+        or type(init["seed"]) is not int
+        or init["seed"] < 0
+        or init["hero_control"] not in {"delegated", "interactive"}
+        or type(init["expected_tick_count"]) is not int
+        or init["expected_tick_count"] < 1
+        or type(init["final_tick"]) is not int
+        or not isinstance(init["final_world_digest"], str)
+        or len(init["final_world_digest"]) != 64
+    ):
+        raise ValueError("unsupported versioned run initialization")
+    terminator = records[-1].event
+    if not isinstance(terminator, dict) or set(terminator) != {
+        "record_type",
+        "version",
+        "expected_tick_count",
+        "final_tick",
+        "final_world_digest",
+        "last_tick_event_hash",
+    }:
+        raise ValueError("versioned replay requires a canonical run terminator")
+    tick_records = records[1:-1]
+    if (
+        terminator["record_type"] != "run_end"
+        or terminator["version"] != 2
+        or terminator["expected_tick_count"] != init["expected_tick_count"]
+        or terminator["final_tick"] != init["final_tick"]
+        or terminator["final_world_digest"] != init["final_world_digest"]
+        or terminator["last_tick_event_hash"] != tick_records[-1].event_hash
+        or len(tick_records) != init["expected_tick_count"]
+    ):
+        raise ValueError("versioned replay run terminator or tick count does not match")
+    hero_name = validate_hero_name(init["hero_name"])
+    character_class = CharacterClass(init["character_class"])
+    seed = init["seed"]
+    world = _starting_world(character_class, hero_name)
+    story = StoryState(relationship_scores={(HERO_ID, "rhea-vale"): _INITIAL_RHEA_RELATIONSHIP})
+    scheduler = SimulationScheduler(seed=seed)
+    all_events: list[DomainEvent] = []
+    for record in tick_records:
+        payload = record.event
+        if not isinstance(payload, dict) or set(payload) != {
+            "record_type",
+            "version",
+            "tick",
+            "proposals",
+            "action_events",
+            "story_facts",
+            "story_intent",
+            "story_resolution",
+        }:
+            raise ValueError(f"record {record.seq} must be a canonical tick")
+        if (
+            payload.get("version") != 2
+            or type(payload["tick"]) is not int
+            or payload["tick"] != world.tick
+        ):
+            raise ValueError(f"record {record.seq} has an invalid tick envelope")
+        raw_proposals = payload.get("proposals")
+        if not isinstance(raw_proposals, list):
+            raise ValueError(f"record {record.seq} proposals must be a list")
+        intents: list[ActionIntent] = []
+        party_before = world.party
+        if party_before is None:
+            raise ValueError("strict replay world has no party")
+        for raw in raw_proposals:
+            if not isinstance(raw, dict) or set(raw) != {
+                "actor_id",
+                "action",
+                "target_location_id",
+                "quantity",
+                "controller",
+                "reason_code",
+            }:
+                raise ValueError(f"record {record.seq} has an invalid proposal")
+            controlled = ControlledAction(
+                ActionIntent(
+                    raw["actor_id"],
+                    ActionKind(raw["action"]),
+                    target_location_id=raw["target_location_id"],
+                    quantity=raw["quantity"],
+                ),
+                raw["controller"],
+                raw["reason_code"],
+            )
+            is_hero = controlled.actor_id == party_before.selected_hero_id
+            if is_hero and init["hero_control"] == "interactive":
+                allowed_provenance = {
+                    ("user", "user.selected"),
+                    ("baseline_policy", "policy.baseline"),
+                }
+            else:
+                allowed_provenance = {("baseline_policy", "policy.baseline")}
+            if (
+                controlled.controller,
+                controlled.reason_code,
+            ) not in allowed_provenance:
+                raise ValueError(f"record {record.seq} has invalid controller provenance")
+            intents.append(
+                ActionIntent(
+                    raw["actor_id"],
+                    ActionKind(raw["action"]),
+                    target_location_id=raw["target_location_id"],
+                    quantity=raw["quantity"],
+                )
+            )
+        expected_actor_order = tuple(
+            actor_id
+            for actor_id in party_before.member_ids
+            if world.adventurers[actor_id].alive
+        )
+        if tuple(intent.adventurer_id for intent in intents) != expected_actor_order:
+            raise ValueError(
+                f"record {record.seq} proposals are not in canonical party order"
+            )
+        hourly = scheduler.run_hour(world, intents)
+        if [to_json_value(event) for event in hourly.events] != payload.get("action_events"):
+            raise ValueError(f"record {record.seq} action events do not match the engine result")
+        action_world = hourly.final_state
+        party = action_world.party
+        if party is None:
+            raise ValueError("strict replay world has no party")
+        hero = action_world.adventurers[party.selected_hero_id]
+        available_locations = (hero.location_id,)
+        available_quests = (
+            ("echoes-at-emberfall",)
+            if hero.location_id == "emberfall-quest-hall"
+            else ()
+        )
+        completed_objectives = (
+            ("echoes-at-emberfall",)
+            if any(
+                isinstance(event, ActionSucceeded)
+                and event.adventurer_id == HERO_ID
+                and event.action is ActionKind.GATHER
+                and hero.location_id == "mossreach"
+                for event in hourly.events
+            )
+            else ()
+        )
+        story = _apply_objective_relationship(story, bool(completed_objectives))
+        facts = {
+            "available_location_ids": list(available_locations),
+            "available_quest_ids": list(available_quests),
+            "completed_objective_quest_ids": list(completed_objectives),
+            "relationship_score": [
+                str(story.relationship_score(HERO_ID, "rhea-vale"))
+            ],
+        }
+        if payload.get("story_facts") != facts:
+            raise ValueError(f"record {record.seq} story facts do not match observed facts")
+        raw_intent = payload.get("story_intent")
+        if not isinstance(raw_intent, dict) or set(raw_intent) != {
+            "version",
+            "candidate_id",
+            "kind",
+            "tick",
+            "hero_id",
+            "reason_code",
+            "quest_id",
+            "companion_id",
+        }:
+            raise ValueError(f"record {record.seq} has a noncanonical story intent")
+        selected = StoryIntent(
+            version=raw_intent["version"],
+            candidate_id=raw_intent["candidate_id"],
+            kind=StoryIntentKind(raw_intent["kind"]),
+            tick=raw_intent["tick"],
+            hero_id=raw_intent["hero_id"],
+            reason_code=raw_intent["reason_code"],
+            quest_id=raw_intent["quest_id"],
+            companion_id=raw_intent["companion_id"],
+        )
+        resolution = resolve_story_intent(
+            action_world,
+            story,
+            selected,
+            LIFE_EVENT_CATALOG,
+            available_location_ids=available_locations,
+            available_quest_ids=available_quests,
+            completed_objective_quest_ids=completed_objectives,
+        )
+        expected_resolution = {
+            "event": to_json_value(resolution.event),
+            "story": to_json_value(resolution.story),
+            "party_member_ids": list(
+                resolution.world.party.member_ids
+                if resolution.world.party is not None
+                else ()
+            ),
+        }
+        if payload.get("story_resolution") != expected_resolution:
+            raise ValueError(
+                f"record {record.seq} story resolution does not match the engine result"
+            )
+        expected_tick = {
+            "record_type": "tick",
+            "version": 2,
+            "tick": world.tick,
+            "proposals": raw_proposals,
+            "action_events": [to_json_value(event) for event in hourly.events],
+            "story_facts": facts,
+            "story_intent": to_json_value(selected),
+            "story_resolution": expected_resolution,
+        }
+        if payload != expected_tick:
+            raise ValueError(f"record {record.seq} does not match the canonical tick payload")
+        world = resolution.world
+        story = resolution.story
+        all_events.extend(hourly.events)
+        if not world.adventurers[HERO_ID].alive and record is not tick_records[-1]:
+            raise ValueError("replay contains records after selected hero became dead")
+    if world.tick != init["final_tick"] or _world_digest(world) != init["final_world_digest"]:
+        raise ValueError("versioned replay final world commitment does not match")
+    replay_status = "해시 검증 완료" if hash_verified else "스키마 검증 완료"
+    return SimulationResult(
+        tuple(_event_view(event, world) for event in all_events),
+        _adventurer_views(world),
+        RunSummary(seed, max(1, (world.tick + 23) // 24), len(all_events), replay_status),
+    )
+
+
 def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
     log = EventLog(event_log)
     records = log.verify() if verify_hash else log.read()
+    if (
+        records
+        and isinstance(records[0].event, dict)
+        and records[0].event.get("record_type") == "run_init"
+    ):
+        return _strict_replay_v2(records, hash_verified=verify_hash)
     world = create_initial_world()
     if records:
         first_actor = _event_fields(records[0])[2]
@@ -743,7 +1439,7 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
         for record in tick_records:
             world, event = _replay_action(world, record)
             replayed_events.append(event)
-        world, finalized_events = apply_life_events(world, tuple(replayed_events))
+        world, finalized_events = apply_legacy_life_events(world, tuple(replayed_events))
         for record, event in zip(tick_records, finalized_events, strict=True):
             if to_json_value(event) != record.event:
                 raise ValueError(f"event {record.seq} does not match the engine result")
@@ -802,6 +1498,23 @@ def _render_history_details(archive: HistoryArchive, run_number: int) -> str:
             hour = record.payload.get("hour", "?")
             hour_label = f"{hour:02d}" if type(hour) is int else "?"
             lines.append(f"\n── {day}일차 {hour_label}:00 ──")
+            raw_events = record.payload.get("events", [])
+            if isinstance(raw_events, list):
+                for raw_event in raw_events:
+                    if (
+                        not isinstance(raw_event, dict)
+                        or raw_event.get("kind") != "story_resolution"
+                    ):
+                        continue
+                    scene = _history_text(raw_event.get("scene", "이야기 흐름 유지"))
+                    opportunity = _history_text(raw_event.get("opportunity", "no_op"))
+                    evidence = raw_event.get("evidence_ids", [])
+                    evidence_text = ", ".join(
+                        _history_text(item) for item in evidence if isinstance(item, str)
+                    ) if isinstance(evidence, list) else ""
+                    lines.append(f"[이야기] {scene} · {opportunity}")
+                    if evidence_text:
+                        lines.append(f"근거 ID: {evidence_text}")
             party = record.payload.get("party", [])
             if isinstance(party, list):
                 for raw_member in party:
@@ -833,7 +1546,18 @@ def _run_home(
     stdin: TextIO,
     stdout: TextIO,
     history_root: Path,
+    key_reader: KeyReader | None = None,
+    frame_writer: Callable[[str], None] | None = None,
 ) -> int:
+    if key_reader is not None:
+        return _run_home_keyboard(
+            runner=runner,
+            stdin=stdin,
+            stdout=stdout,
+            history_root=history_root,
+            key_reader=key_reader,
+            frame_writer=frame_writer,
+        )
     while True:
         stdout.write(
             "\n══ The Glass Frontier ══\n"
@@ -886,6 +1610,105 @@ def _run_home(
         stdout.write("1, 2, 3 중에서 선택하세요.\n")
 
 
+def _run_home_keyboard(
+    *,
+    runner: Runner | None,
+    stdin: TextIO,
+    stdout: TextIO,
+    history_root: Path,
+    key_reader: KeyReader,
+    frame_writer: Callable[[str], None] | None = None,
+) -> int:
+    home_choices = (
+        MenuChoice("시작하기", "새로운 모험"),
+        MenuChoice("히스토리", "저장된 회차 보기"),
+        MenuChoice("종료", "게임 닫기"),
+    )
+    while True:
+        selected = _select_menu(
+            "The Glass Frontier · 홈",
+            home_choices,
+            ("start", "history", "exit"),
+            key_reader=key_reader,
+            stdout=stdout,
+            frame_writer=frame_writer,
+        )
+        if selected in {None, "exit"}:
+            return 0
+        if selected == "history":
+            archive = HistoryArchive(history_root)
+            stdout.write(_render_history_list(archive))
+            runs = archive.list_runs()
+            if not runs:
+                continue
+            run_choices = tuple(
+                MenuChoice(
+                    f"{run.run_number}회차 · "
+                    f"{_history_text(run.metadata.get('hero_name', '알 수 없음'))}"
+                )
+                for run in runs
+            ) + (MenuChoice("홈으로"),)
+            run_number = _select_menu(
+                "히스토리 선택",
+                run_choices,
+                tuple(run.run_number for run in runs) + (None,),
+                key_reader=key_reader,
+                stdout=stdout,
+                allow_back=True,
+                frame_writer=frame_writer,
+            )
+            if isinstance(run_number, int):
+                stdout.write(_render_history_details(archive, run_number))
+            continue
+        if runner is not None:
+            result = runner(
+                seed=42,
+                days=None,
+                hours=1,
+                headless=False,
+                output=None,
+                force=False,
+                character_class=None,
+                history_root=history_root,
+                stdin=stdin,
+                stdout=stdout,
+            )
+            stdout.write(
+                render_simulation(result.events, result.adventurers, result.summary, width=80)
+            )
+            continue
+
+        def continue_after_hour(world: WorldState) -> bool:
+            del world
+            choice = _select_menu(
+                "다음 시간을 진행할까요?",
+                (MenuChoice("계속하기"), MenuChoice("홈으로")),
+                (True, False),
+                key_reader=key_reader,
+                stdout=stdout,
+                frame_writer=frame_writer,
+            )
+            return choice is True
+
+        output_path = _next_home_log_path(history_root.parent / "playthroughs")
+        try:
+            _default_run(
+                seed=42,
+                hours=MAX_RECORDS - 1,
+                headless=False,
+                output=output_path,
+                force=False,
+                history_root=history_root,
+                stdin=stdin,
+                stdout=stdout,
+                key_reader=key_reader,
+                continue_decider=continue_after_hour,
+                frame_writer=frame_writer,
+            )
+        except (EOFError, HeroNameError):
+            continue
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -894,18 +1717,42 @@ def main(
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
     home_history_root: Path = Path("runs/history"),
+    key_reader: KeyReader | None = None,
 ) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     input_stream = stdin if stdin is not None else sys.stdin
     stream = stdout if stdout is not None else sys.stdout
     if not arguments:
-        return _run_home(
-            runner=runner,
-            replayer=replayer,
-            stdin=input_stream,
-            stdout=stream,
-            history_root=home_history_root,
-        )
+        try:
+            if key_reader is not None:
+                return _run_home(
+                    runner=runner,
+                    replayer=replayer,
+                    stdin=input_stream,
+                    stdout=stream,
+                    history_root=home_history_root,
+                    key_reader=key_reader,
+                )
+            if input_stream.isatty() and stream.isatty():
+                fd = input_stream.fileno()
+                with RawTerminal(fd), AnsiScreen(stream) as screen:
+                    return _run_home(
+                        runner=runner,
+                        replayer=replayer,
+                        stdin=input_stream,
+                        stdout=stream,
+                        history_root=home_history_root,
+                        key_reader=PosixKeyReader(fd=fd),
+                        frame_writer=screen.draw,
+                    )
+            stream.write(
+                "대화형 화면에는 TTY가 필요합니다. "
+                "자동 실행은 `aincrad simulate --headless`를 사용하세요.\n"
+            )
+            stream.flush()
+            return 2
+        except KeyboardInterrupt:
+            return 130
     parser = build_parser()
     args = parser.parse_args(arguments)
 
@@ -931,6 +1778,7 @@ def main(
                     if args.character_class is not None
                     else None
                 ),
+                "hero_name": args.hero_name,
                 "history_root": args.history_root,
                 "stdin": stdin,
                 "stdout": stream,
@@ -973,9 +1821,11 @@ def main(
                     if args.character_class is not None
                     else None
                 ),
+                hero_name=args.hero_name,
                 history_root=args.history_root,
                 stdin=stdin,
                 stdout=stream,
+                key_reader=key_reader,
             )
     else:
         result = (replayer or _default_replay)(

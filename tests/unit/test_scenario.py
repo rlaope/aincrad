@@ -28,13 +28,13 @@ def test_initial_scenario_exposes_the_three_fixture_candidate_adventurers() -> N
     assert dungeon[-1].next_world_floor == 2
 
 
-def test_live_start_replaces_candidates_with_one_selected_hero() -> None:
+def test_live_start_keeps_candidates_but_party_contains_only_stable_hero() -> None:
     world = _starting_world(CharacterClass.WARRIOR)
 
-    assert tuple(world.adventurers) == ("hero-warrior",)
+    assert set(world.adventurers) == {"hero", "rhea-vale", "tovin-reed", "sable-quill"}
     assert world.party is not None
-    assert world.party.selected_hero_id == "hero-warrior"
-    assert world.party.member_ids == ("hero-warrior",)
+    assert world.party.selected_hero_id == "hero"
+    assert world.party.member_ids == ("hero",)
 
 
 def test_every_declared_location_connection_exists() -> None:

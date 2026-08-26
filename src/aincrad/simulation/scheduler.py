@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from random import Random
@@ -7,7 +8,7 @@ from random import Random
 from aincrad.domain import ActionIntent, ActionKind, DomainEvent, WorldState
 from aincrad.domain.rules import apply_intent
 
-from .runtime import apply_action_progression, apply_life_events
+from .runtime import apply_action_progression
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,13 +32,17 @@ class SimulationScheduler:
     def run_hour(
         self, initial_state: WorldState, intents: Iterable[ActionIntent]
     ) -> SimulationResult:
-        hourly_intents = tuple(intents)
-        actor_ids = tuple(intent.adventurer_id for intent in hourly_intents)
-        if len(actor_ids) != len(set(actor_ids)):
-            raise ValueError("each adventurer may submit at most one action per hour")
+        submitted = tuple(intents)
         party = initial_state.party
         if party is None:  # WorldState normalizes this, retained for type narrowing.
             raise ValueError("world has no runtime party")
+        order = {actor_id: index for index, actor_id in enumerate(party.member_ids)}
+        hourly_intents = tuple(
+            sorted(submitted, key=lambda intent: order.get(intent.adventurer_id, len(order)))
+        )
+        actor_ids = tuple(intent.adventurer_id for intent in hourly_intents)
+        if len(actor_ids) != len(set(actor_ids)):
+            raise ValueError("each adventurer may submit at most one action per hour")
         expected_actor_ids = {
             member_id
             for member_id in party.member_ids
@@ -50,11 +55,13 @@ class SimulationScheduler:
                 "hourly batch requires exactly one action from every living current party member"
             )
 
-        random = Random(self.seed + initial_state.tick)
         world = initial_state
         events: list[DomainEvent] = []
         next_tick = initial_state.tick + 1
         for intent in hourly_intents:
+            random = _actor_random(
+                self.seed, initial_state.tick, "action", intent.adventurer_id
+            )
             gather_yield = random.randint(1, 3) if intent.action is ActionKind.GATHER else 1
             before_action = world
             world, emitted = apply_intent(world, intent, gather_yield=gather_yield)
@@ -89,8 +96,7 @@ class SimulationScheduler:
             if any(event.next_tick != next_tick for event in emitted):
                 raise ValueError("hourly actions must share the next tick")
             events.extend(emitted)
-        world, finalized_events = apply_life_events(world, tuple(events))
-        return SimulationResult(replace(world, tick=next_tick), finalized_events)
+        return SimulationResult(replace(world, tick=next_tick), tuple(events))
 
     def run(
         self, initial_state: WorldState, intents: Iterable[ActionIntent]
@@ -108,3 +114,10 @@ class SimulationScheduler:
                 raise ValueError("domain event did not record the scheduler tick transition")
             world = replace(world, tick=clock.tick)
         return SimulationResult(world, tuple(events))
+
+
+def _actor_random(seed: int, tick: int, channel: str, actor_id: str) -> Random:
+    """Return an actor-local RNG independent of proposal arrival order."""
+
+    material = f"{seed}\0{tick}\0{channel}\0{actor_id}".encode()
+    return Random(int.from_bytes(hashlib.sha256(material).digest(), "big"))
