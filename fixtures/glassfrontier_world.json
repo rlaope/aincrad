@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "world_id": "glassfrontier",
+  "title": "The Glass Frontier",
+  "towns": [
+    {
+      "id": "emberfall",
+      "name": "Emberfall",
+      "kind": "town",
+      "description": "A lantern-lit settlement built around a warm shard spring.",
+      "connections": ["mossreach"]
+    }
+  ],
+  "hunting_grounds": [
+    {
+      "id": "mossreach",
+      "name": "Mossreach Wilds",
+      "kind": "hunting_ground",
+      "description": "Rain-bright terraces where glasshorn hares and reed wolves roam.",
+      "connections": ["emberfall", "vault-1"]
+    }
+  ],
+  "dungeons": [
+    {
+      "id": "starless-vault",
+      "name": "The Starless Vault",
+      "floors": [
+        {
+          "id": "vault-1",
+          "depth": 1,
+          "name": "Echo Gallery",
+          "description": "Resonant halls patrolled by clay sentries.",
+          "connections": ["mossreach", "vault-2"]
+        },
+        {
+          "id": "vault-2",
+          "depth": 2,
+          "name": "Flooded Archive",
+          "description": "Half-submerged records watched by ink eels.",
+          "connections": ["vault-1", "vault-3"]
+        },
+        {
+          "id": "vault-3",
+          "depth": 3,
+          "name": "Nightglass Crucible",
+          "description": "A silent forge surrounding a dormant prism guardian.",
+          "connections": ["vault-2"]
+        }
+      ]
+    }
+  ],
+  "adventurers": [
+    {
+      "id": "rhea-vale",
+      "name": "Rhea Vale",
+      "role": "vanguard",
+      "location_id": "emberfall",
+      "controller": "agent",
+      "stats": {"hp": 24, "max_hp": 24, "mp": 6, "max_mp": 6}
+    },
+    {
+      "id": "tovin-reed",
+      "name": "Tovin Reed",
+      "role": "pathfinder",
+      "location_id": "mossreach",
+      "controller": "agent",
+      "stats": {"hp": 18, "max_hp": 18, "mp": 10, "max_mp": 10}
+    },
+    {
+      "id": "sable-quill",
+      "name": "Sable Quill",
+      "role": "arcanist",
+      "location_id": "emberfall",
+      "controller": "agent",
+      "stats": {"hp": 14, "max_hp": 14, "mp": 18, "max_mp": 18}
+    }
+  ],
+  "npcs": [
+    {
+      "id": "npc-orrin",
+      "name": "Orrin Flint",
+      "location_id": "emberfall",
+      "controller": "rules",
+      "service": "shop",
+      "rules": {"buy:field-ration": {"gold_delta": -3, "items": ["field-ration"]}}
+    },
+    {
+      "id": "npc-maela",
+      "name": "Maela Fen",
+      "location_id": "emberfall",
+      "controller": "rules",
+      "service": "healer",
+      "rules": {"heal": {"gold_delta": -5, "restore_hp": "full"}}
+    },
+    {
+      "id": "npc-brann",
+      "name": "Brann Lume",
+      "location_id": "emberfall",
+      "controller": "rules",
+      "service": "inn",
+      "rules": {"rest": {"gold_delta": -2, "restore_hp": "full", "restore_mp": "full"}}
+    }
+  ]
+}

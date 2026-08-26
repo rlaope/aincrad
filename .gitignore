@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Runs and generated evidence
+runs/
+artifacts/
+*.jsonl
+
+# Local workflow state
+.omh/
+.hermes/
+
+# Editors / macOS
+.DS_Store
+.idea/
+.vscode/
