@@ -59,3 +59,12 @@ def test_policy_boundary_accepts_domain_intents_and_returns_the_exact_candidate(
     chosen = BaselinePolicy().choose(perception(), (wait, move))
 
     assert chosen is move
+
+
+def test_baseline_sells_collected_resources_before_leaving_town() -> None:
+    trade = DomainActionIntent("rhea", ActionKind.TRADE, quantity=3)
+    move = DomainActionIntent("rhea", ActionKind.MOVE, target_location_id="mossreach")
+
+    chosen = BaselinePolicy().choose(perception(), (move, trade))
+
+    assert chosen is trade

@@ -45,6 +45,7 @@ class BaselinePolicy:
         "attack",
         "gather",
         "interact",
+        "trade",
         "move",
         "rest",
         "wait",

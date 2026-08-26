@@ -39,7 +39,7 @@ def test_simulate_then_replay_is_a_working_offline_path(tmp_path: Path) -> None:
 
     assert replayed.returncode == 0, replayed.stderr
     assert "검증" in replayed.stdout
-    assert "Rhea Vale" in replayed.stdout
+    assert "레아 베일" in replayed.stdout
 
 
 def test_simulate_refuses_to_overwrite_event_evidence_without_force(tmp_path: Path) -> None:
@@ -47,7 +47,14 @@ def test_simulate_refuses_to_overwrite_event_evidence_without_force(tmp_path: Pa
     event_log.write_text("evidence", encoding="utf-8")
 
     refused = run_cli(
-        "simulate", "--seed", "1", "--days", "1", "--output", str(event_log)
+        "simulate",
+        "--seed",
+        "1",
+        "--days",
+        "1",
+        "--headless",
+        "--output",
+        str(event_log),
     )
     assert refused.returncode != 0
     assert event_log.read_text(encoding="utf-8") == "evidence"
@@ -58,6 +65,7 @@ def test_simulate_refuses_to_overwrite_event_evidence_without_force(tmp_path: Pa
         "1",
         "--days",
         "1",
+        "--headless",
         "--output",
         str(event_log),
         "--force",

@@ -36,6 +36,8 @@ def test_renderer_projects_korean_time_events_status_and_summary_within_80_colum
     assert "모험가 상태" in rendered
     assert "Rhea Vale" in rendered
     assert "HP 87" in rendered
+    assert "Lv.1" in rendered
+    assert "EXP 0" in rendered
     assert "실행 요약" in rendered
     assert "시드 7" in rendered
     assert "2일" in rendered

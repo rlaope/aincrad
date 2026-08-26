@@ -22,6 +22,9 @@ class AdventurerView:
     hp: int
     mp: int
     activity: str
+    level: int = 1
+    exp: int = 0
+    character_class: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,10 +43,19 @@ def _display_width(text: str) -> int:
     return sum(_char_width(character) for character in text)
 
 
-def _safe_text(text: str) -> str:
-    """Neutralize terminal controls in all text crossing the rendering boundary."""
+def sanitize_terminal_text(text: str) -> str:
+    """Neutralize controls, including Unicode format and bidi characters."""
 
-    return "".join(character if character.isprintable() else "�" for character in text)
+    return "".join(
+        character
+        if character.isprintable() and unicodedata.category(character)[0] != "C"
+        else "�"
+        for character in text
+    )
+
+
+def _safe_text(text: str) -> str:
+    return sanitize_terminal_text(text)
 
 
 def _clip(text: str, width: int) -> str:
@@ -119,18 +131,36 @@ def render_simulation(
         lines.extend(f"  {part}" for part in _wrap(_safe_text(event.message), width - 2))
 
     lines.extend(["", _section("모험가 상태", width)])
-    columns = (12, 22, 9, 9, width - 64)
-    rows = [("이름", "위치", "HP", "MP", "활동")]
-    rows.extend(
-        (
-            _safe_text(adventurer.name),
-            _safe_text(adventurer.location),
-            f"HP {adventurer.hp}",
-            f"MP {adventurer.mp}",
-            _safe_text(adventurer.activity),
+    columns: tuple[int, ...]
+    rows: list[tuple[str, ...]]
+    if width >= 74:
+        columns = (10, 8, 14, 7, 7, 10, width - 74)
+        rows = [("이름", "직업", "위치", "HP", "MP", "성장", "활동")]
+        rows.extend(
+            (
+                _safe_text(adventurer.name),
+                _safe_text(adventurer.character_class),
+                _safe_text(adventurer.location),
+                f"HP {adventurer.hp}",
+                f"MP {adventurer.mp}",
+                f"Lv.{adventurer.level} EXP {adventurer.exp}",
+                _safe_text(adventurer.activity),
+            )
+            for adventurer in adventurers
         )
-        for adventurer in adventurers
-    )
+    else:
+        columns = (6, 6, 5, 5, width - 34)
+        rows = [("이름/직업", "위치", "HP", "MP", "성장")]
+        rows.extend(
+            (
+                _safe_text(f"{adventurer.name}/{adventurer.character_class}"),
+                _safe_text(adventurer.location),
+                f"HP {adventurer.hp}",
+                f"MP {adventurer.mp}",
+                f"Lv.{adventurer.level} EXP {adventurer.exp}",
+            )
+            for adventurer in adventurers
+        )
     for row in rows:
         lines.append(
             " | ".join(
