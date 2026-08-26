@@ -13,7 +13,32 @@ from aincrad.domain import (
 def create_initial_world() -> WorldState:
     locations = {
         "emberfall": Location(
-            "emberfall", "Emberfall", LocationKind.TOWN, ("mossreach",)
+            "emberfall",
+            "Emberfall",
+            LocationKind.TOWN,
+            (
+                "emberfall-shop",
+                "emberfall-inn",
+                "emberfall-quest-hall",
+                "emberfall-plaza",
+                "emberfall-tavern",
+                "mossreach",
+            ),
+        ),
+        "emberfall-shop": Location(
+            "emberfall-shop", "Cinderstock Exchange", LocationKind.TOWN, ("emberfall",)
+        ),
+        "emberfall-inn": Location(
+            "emberfall-inn", "The Quiet Wick", LocationKind.TOWN, ("emberfall",)
+        ),
+        "emberfall-quest-hall": Location(
+            "emberfall-quest-hall", "Wayfinder Assembly", LocationKind.TOWN, ("emberfall",)
+        ),
+        "emberfall-plaza": Location(
+            "emberfall-plaza", "Prismwake Square", LocationKind.TOWN, ("emberfall",)
+        ),
+        "emberfall-tavern": Location(
+            "emberfall-tavern", "The Copper Comet", LocationKind.TOWN, ("emberfall",)
         ),
         "mossreach": Location(
             "mossreach",
@@ -21,16 +46,33 @@ def create_initial_world() -> WorldState:
             LocationKind.HUNTING_GROUND,
             ("emberfall", "vault-1"),
         ),
-        "vault-1": Location(
-            "vault-1", "Echo Gallery", LocationKind.DUNGEON, ("mossreach", "vault-2")
-        ),
-        "vault-2": Location(
-            "vault-2", "Flooded Archive", LocationKind.DUNGEON, ("vault-1", "vault-3")
-        ),
-        "vault-3": Location(
-            "vault-3", "Nightglass Crucible", LocationKind.DUNGEON, ("vault-2",)
-        ),
     }
+    dungeon_names = (
+        "Echo Gallery",
+        "Flooded Archive",
+        "Nightglass Causeway",
+        "Hushed Reservoir",
+        "Sable Orrery",
+        "Gloam Workshop",
+        "Ashen Conservatory",
+        "Inverted Belfry",
+        "Crownless Antechamber",
+        "Chamber of the Null Cartographer",
+    )
+    for stage, name in enumerate(dungeon_names, start=1):
+        previous = "mossreach" if stage == 1 else f"vault-{stage - 1}"
+        connections = (previous,) if stage == 10 else (previous, f"vault-{stage + 1}")
+        locations[f"vault-{stage}"] = Location(
+            f"vault-{stage}",
+            name,
+            LocationKind.DUNGEON,
+            connections,
+            stage=stage,
+            is_boss_room=stage == 10,
+            boss_id="null-cartographer" if stage == 10 else None,
+            transition_id="aurora-lift-floor-2" if stage == 10 else None,
+            next_world_floor=2 if stage == 10 else None,
+        )
     adventurers = {
         "rhea-vale": Adventurer(
             "rhea-vale",
