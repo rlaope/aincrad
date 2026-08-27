@@ -28,6 +28,10 @@ StoryPerception -> Story Director -> StoryIntent -----------+-> Validator/Resolv
   simulation은 worker thread에서 결정론적으로 실행되며 `choose`/`input_text` interaction
   boundary를 통해서만 Textual main loop에 선택을 요청합니다. headless/replay/history CLI는
   full-screen app과 독립적으로 동작합니다.
+- 플레이어에게 보이는 지역명은 canonical location ID와 분리된 한국어 projection입니다.
+  한 시간의 서사는 모든 actor intent의 일괄 판정, progression, Story resolution, history append가
+  끝난 뒤 확정된 `DomainEvent`와 최종 상태만 읽어 생성하며 세계 상태를 다시 변경하지 않습니다.
+  서사 화면을 닫은 뒤에만 다음 시간 진행 여부를 묻습니다.
 
 ## 시간
 
