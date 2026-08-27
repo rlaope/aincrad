@@ -13,7 +13,7 @@ from aincrad.cli import (
 from aincrad.domain import ActionIntent, ActionKind, ActionSucceeded, CharacterClass
 from aincrad.domain.identity import HERO_ID
 from aincrad.simulation import create_initial_world
-from aincrad.tui.localization import location_name_ko
+from aincrad.tui.localization import location_description_ko, location_name_ko
 
 
 def test_every_runtime_location_has_a_korean_display_name() -> None:
@@ -43,6 +43,26 @@ def test_every_runtime_location_has_a_korean_display_name() -> None:
         "vault-9": "왕관 없는 대기실",
         "vault-10": "공허 지도제작자의 방",
     }
+
+
+def test_every_runtime_location_has_public_korean_physical_context() -> None:
+    world = create_initial_world()
+
+    descriptions = {
+        location_id: location_description_ko(location_id)
+        for location_id in world.locations
+    }
+
+    assert all(description.endswith(".") for description in descriptions.values())
+    assert all(
+        any("가" <= char <= "힣" for char in description)
+        for description in descriptions.values()
+    )
+    assert all(
+        location_id not in description
+        for location_id, description in descriptions.items()
+    )
+    assert location_description_ko("unknown-place") == "확인된 지형 정보가 없습니다."
 
 
 def test_action_and_status_projection_use_korean_location_names() -> None:

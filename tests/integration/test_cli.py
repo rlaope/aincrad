@@ -18,12 +18,20 @@ from aincrad.cli import (
     _default_run,
     _event_fields,
     _prompt_for_intent,
+    _render_history_details,
     _run_hours,
     _starting_world,
     build_parser,
     main,
 )
 from aincrad.domain import ActionIntent, ActionKind, CharacterClass
+from aincrad.domain.identity import (
+    CharacterIdentityProfile,
+    CoreValue,
+    InquiryStance,
+    RelationshipStance,
+    RiskAttitude,
+)
 from aincrad.history import HistoryArchive
 from aincrad.persistence import GENESIS_HASH, EventLog, StoredEvent, to_json_value
 from aincrad.simulation import SimulationScheduler, create_initial_world
@@ -62,6 +70,53 @@ def sample_result() -> SimulationResult:
         adventurers=(AdventurerView("Rhea Vale", "Emberfall", 100, 25, "대기"),),
         summary=RunSummary(seed=9, days=3, event_count=1, status="완료"),
     )
+
+
+def test_committed_v2_log_remains_hash_verified_replayable() -> None:
+    event_log = Path(__file__).parents[1] / "fixtures" / "v2_events_warrior.jsonl"
+
+    replayed = _default_replay(event_log=event_log, verify_hash=True)
+
+    assert replayed.summary.status == "해시 검증 완료"
+    assert replayed.summary.event_count == 2
+
+
+def test_identity_profile_round_trips_through_v3_log_and_history(tmp_path: Path) -> None:
+    event_log = tmp_path / "events.jsonl"
+    history_root = tmp_path / "history"
+    identity = CharacterIdentityProfile(
+        inquiry_stance=InquiryStance.ANALYTICAL,
+        risk_attitude=RiskAttitude.CAREFUL,
+        core_value=CoreValue.HARMONY,
+        relationship_stance=RelationshipStance.COOPERATIVE,
+    )
+
+    simulated = _default_run(
+        seed=7,
+        hours=1,
+        headless=True,
+        output=event_log,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+        hero_name="별",
+        identity_profile=identity,
+        history_root=history_root,
+        stdin=StringIO(),
+        stdout=StringIO(),
+    )
+    replayed = _default_replay(event_log=event_log, verify_hash=True)
+
+    init = EventLog(event_log).verify()[0].event
+    assert init["version"] == 3
+    assert init["schema_version"] == 3
+    assert init["identity"] == identity.to_json()
+    assert replayed.adventurers == simulated.adventurers
+    assert HistoryArchive(history_root).load_run(1).metadata["identity"] == identity.to_json()
+    history_text = _render_history_details(HistoryArchive(history_root), 1)
+    assert "탐구 성향: 차분히 분석하고 관찰한다" in history_text
+    assert "위험 태도: 신중하게 안전을 지킨다" in history_text
+    assert "핵심 가치: 조화로운 삶" in history_text
+    assert "관계 성향: 힘을 모아 협력한다" in history_text
 
 
 def test_simulate_parser_accepts_explicit_hero_name_option() -> None:
@@ -770,6 +825,36 @@ def test_strict_replay_round_trips_all_four_classes(
     assert all(record.event["record_type"] == "tick" for record in records[1:-1])
     assert records[-1].event["record_type"] == "run_end"
     assert replayed.adventurers == simulated.adventurers
+
+
+@pytest.mark.parametrize("version", (2, 3))
+@pytest.mark.parametrize("field", ("version", "expected_tick_count", "final_tick"))
+def test_strict_replay_rejects_boolean_run_end_integer_commitments(
+    tmp_path: Path, version: int, field: str
+) -> None:
+    if version == 2:
+        source = Path(__file__).parents[1] / "fixtures" / "v2_events_warrior.jsonl"
+    else:
+        source = tmp_path / "v3.jsonl"
+        _default_run(
+            seed=11,
+            hours=1,
+            headless=True,
+            output=source,
+            force=False,
+            character_class=CharacterClass.WARRIOR,
+        )
+    records = EventLog(source).verify()
+    malformed = EventLog(tmp_path / f"v{version}-{field}.jsonl")
+    for record in records[:-1]:
+        malformed.append(record.event)
+    terminator = dict(records[-1].event)
+    terminator[field] = True
+    terminator["last_tick_event_hash"] = malformed.verify()[-1].event_hash
+    malformed.append(terminator)
+
+    with pytest.raises(ValueError, match="canonical run terminator"):
+        _default_replay(event_log=malformed.path, verify_hash=True)
 
 
 def test_strict_replay_rejects_incomplete_recruited_party_batch(tmp_path: Path) -> None:

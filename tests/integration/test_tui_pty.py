@@ -124,10 +124,17 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         os.write(master_fd, b"\r")
         capture.read_until("주인공 이름")
         os.write(master_fd, "테스트용사\r".encode())
+        for title in ("탐구 성향", "위험 태도", "핵심 가치", "관계 성향"):
+            capture.read_until(title)
+            os.write(master_fd, b"\r")
         action = capture.read_until("테스트용사의 행동")
         assert "1일차 00:00" in action
         assert "잿불마을" in action
         assert "Emberfall" not in action
+        os.write(master_fd, b"\r")
+        movement = capture.read_until("이동할 곳")
+        assert "물리적:" in movement
+        assert "사회적:" in movement
         os.write(master_fd, b"\r")
         story = capture.read_until("한 시간의 기록")
         assert "고요한 심지 여관" in story
@@ -138,7 +145,7 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         capture.read_until("여정 계속")
         os.write(master_fd, b"s\r")
         capture.read_until("메인 메뉴")
-        os.write(master_fd, b"ss\r")
+        os.write(master_fd, b"sss\r")
         capture.read_until_bytes(b"\x1b[?1049l")
         assert process.wait(timeout=8) == 0
         assert termios.tcgetattr(slave_fd) == original_attributes
@@ -173,7 +180,7 @@ def test_real_pty_renders_a_complete_40_column_home_panel(tmp_path: Path) -> Non
         assert top.index("╭") == bottom.index("╰")
         assert top.index("╮") == bottom.index("╯")
         assert top.index("╮") < 40
-        os.write(master_fd, b"ss\r")
+        os.write(master_fd, b"sss\r")
         capture.read_until_bytes(b"\x1b[?1049l")
         assert process.wait(timeout=8) == 0
         assert termios.tcgetattr(slave_fd) == original_attributes
@@ -201,7 +208,7 @@ def test_real_pty_reflows_while_preserving_menu_selection(tmp_path: Path) -> Non
     capture = TerminalCapture(master_fd, columns=80, lines=24)
     try:
         capture.read_until("메인 메뉴")
-        os.write(master_fd, b"s")
+        os.write(master_fd, b"ss")
         capture.read_until("히스토리")
 
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 40, 0, 0))
@@ -215,7 +222,7 @@ def test_real_pty_reflows_while_preserving_menu_selection(tmp_path: Path) -> Non
         capture.read_until("기록된 회차가 없습니다")
         os.write(master_fd, b"\r")
         capture.read_until("메인 메뉴")
-        os.write(master_fd, b"ss\r")
+        os.write(master_fd, b"sss\r")
         capture.read_until_bytes(b"\x1b[?1049l")
         assert process.wait(timeout=8) == 0
         assert termios.tcgetattr(slave_fd) == original_attributes

@@ -95,12 +95,13 @@ def test_textual_menu_reflows_inside_narrow_terminal() -> None:
     asyncio.run(exercise())
 
 
-def test_three_home_options_fit_inside_a_40_by_24_viewport() -> None:
+def test_four_home_options_fit_inside_a_40_by_24_viewport() -> None:
     def session(ui):  # type: ignore[no-untyped-def]
         ui.choose(
             "메인 메뉴",
             (
                 MenuOption("새 모험", "직업과 이름을 정해 첫 시간을 시작합니다", "start"),
+                MenuOption("해설 AI", "로컬 규칙 또는 Kimi 해설을 선택합니다", "commentator"),
                 MenuOption("히스토리", "저장된 여정의 시간별 기록을 엽니다", "history"),
                 MenuOption("종료", "터미널로 돌아갑니다", "exit"),
             ),
@@ -117,7 +118,7 @@ def test_three_home_options_fit_inside_a_40_by_24_viewport() -> None:
                     break
             choices = app.screen.query_one("#menu").region
             items = list(app.screen.query("ListItem"))
-            assert len(items) == 3
+            assert len(items) == 4
             assert all(
                 choices.y <= item.region.y
                 and item.region.bottom <= choices.bottom

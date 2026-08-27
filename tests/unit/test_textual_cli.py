@@ -10,12 +10,21 @@ import pytest
 
 from aincrad.cli import (
     _AI_CHOICE,
+    _MOVE_CHOICE,
     _available_intents,
     _default_run,
+    _prompt_for_intent_textual,
     _run_home_textual,
     _starting_world,
 )
 from aincrad.domain import ActionIntent, ActionKind, CharacterClass
+from aincrad.domain.identity import (
+    CharacterIdentityProfile,
+    CoreValue,
+    InquiryStance,
+    RelationshipStance,
+    RiskAttitude,
+)
 from aincrad.history import HistoryArchive
 from aincrad.tui.textual_app import MenuOption
 
@@ -55,6 +64,14 @@ class FakeInteraction:
         self.text_screens.append((title, tuple(body_lines)))
 
 
+_IDENTITY_ANSWERS = (
+    InquiryStance.CURIOUS,
+    RiskAttitude.BALANCED,
+    CoreValue.GROWTH,
+    RelationshipStance.COOPERATIVE,
+)
+
+
 def test_textual_home_uses_widget_menu_without_plain_output(tmp_path: Path) -> None:
     interaction = FakeInteraction("exit")
     output = StringIO()
@@ -72,8 +89,32 @@ def test_textual_home_uses_widget_menu_without_plain_output(tmp_path: Path) -> N
     assert interaction.menus[0][0] == "메인 메뉴"
     assert [option.label for option in interaction.menus[0][1]] == [
         "새 모험",
+        "해설 AI",
         "히스토리",
         "종료",
+    ]
+
+
+def test_textual_home_can_select_authenticated_kimi_commentary(tmp_path: Path) -> None:
+    interaction = FakeInteraction("commentator", "kimi", "exit")
+
+    assert _run_home_textual(
+        runner=None,
+        stdin=StringIO(),
+        stdout=StringIO(),
+        history_root=tmp_path / "history",
+        interaction=interaction,  # type: ignore[arg-type]
+    ) == 0
+
+    assert [title for title, _ in interaction.menus] == [
+        "메인 메뉴",
+        "해설 AI 설정",
+        "메인 메뉴",
+    ]
+    assert [option.label for option in interaction.menus[1][1]] == [
+        "Kimi ultrafast",
+        "로컬 규칙 해설",
+        "뒤로",
     ]
 
 
@@ -84,7 +125,7 @@ def test_default_run_routes_character_name_and_action_through_textual_widgets() 
         for intent in _available_intents(world, "hero")
         if intent.action is ActionKind.WAIT
     )
-    interaction = FakeInteraction(CharacterClass.WARRIOR, wait)
+    interaction = FakeInteraction(CharacterClass.WARRIOR, *_IDENTITY_ANSWERS, wait)
     output = StringIO()
 
     result = _default_run(
@@ -100,12 +141,131 @@ def test_default_run_routes_character_name_and_action_through_textual_widgets() 
 
     assert any(adventurer.name == "유리별" for adventurer in result.adventurers)
     assert output.getvalue() == ""
-    assert [title for title, _ in interaction.menus] == ["직업 선택", "유리별의 행동"]
+    assert [title for title, _ in interaction.menus] == [
+        "직업 선택",
+        "탐구 성향",
+        "위험 태도",
+        "핵심 가치",
+        "관계 성향",
+        "유리별의 행동",
+    ]
     assert interaction.menus[-1][1][-1].label == "AI 판단에 맡기기"
 
 
+def test_textual_onboarding_asks_four_human_identity_questions(tmp_path: Path) -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    wait = next(
+        intent
+        for intent in _available_intents(world, "hero")
+        if intent.action is ActionKind.WAIT
+    )
+    interaction = FakeInteraction(
+        CharacterClass.WARRIOR,
+        InquiryStance.ANALYTICAL,
+        RiskAttitude.CAREFUL,
+        CoreValue.HARMONY,
+        RelationshipStance.COOPERATIVE,
+        wait,
+    )
+
+    _default_run(
+        seed=42,
+        hours=1,
+        headless=False,
+        output=tmp_path / "events.jsonl",
+        force=False,
+        history_root=tmp_path / "history",
+        stdin=StringIO(),
+        stdout=StringIO(),
+        interaction=interaction,
+    )
+
+    assert [title for title, _ in interaction.menus] == [
+        "직업 선택",
+        "탐구 성향",
+        "위험 태도",
+        "핵심 가치",
+        "관계 성향",
+        "유리별의 행동",
+    ]
+    identity = HistoryArchive(tmp_path / "history").load_run(1).metadata["identity"]
+    assert identity["inquiry_stance"] == "analytical"
+    assert identity["risk_attitude"] == "careful"
+    assert identity["core_value"] == "harmony"
+    assert identity["relationship_stance"] == "cooperative"
+
+
+def test_textual_movement_is_three_explained_destinations_plus_other() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    first_move = next(
+        intent
+        for intent in _available_intents(world, "hero")
+        if intent.action is ActionKind.MOVE
+    )
+    interaction = FakeInteraction(_MOVE_CHOICE, first_move)
+
+    selected = _prompt_for_intent_textual(
+        world,
+        "hero",
+        interaction=interaction,  # type: ignore[arg-type]
+    )
+
+    assert selected.intent == first_move
+    assert [title for title, _ in interaction.menus] == ["유리별의 행동", "이동할 곳"]
+    movement_options = interaction.menus[1][1]
+    assert len(movement_options) == 4
+    assert movement_options[-1].label == "기타 목적지"
+    assert all("물리적:" in option.description for option in movement_options[:3])
+    assert all("사회적:" in option.description for option in movement_options[:3])
+
+
+def test_identity_changes_commentary_but_not_recommended_destinations() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    first_move = next(
+        intent
+        for intent in _available_intents(world, "hero")
+        if intent.action is ActionKind.MOVE
+    )
+    careful = CharacterIdentityProfile(
+        inquiry_stance=InquiryStance.ANALYTICAL,
+        risk_attitude=RiskAttitude.CAREFUL,
+        core_value=CoreValue.HARMONY,
+        relationship_stance=RelationshipStance.COOPERATIVE,
+    )
+    bold = CharacterIdentityProfile(
+        inquiry_stance=InquiryStance.CURIOUS,
+        risk_attitude=RiskAttitude.BOLD,
+        core_value=CoreValue.FREEDOM,
+        relationship_stance=RelationshipStance.INDEPENDENT,
+    )
+    careful_interaction = FakeInteraction(_MOVE_CHOICE, first_move)
+    bold_interaction = FakeInteraction(_MOVE_CHOICE, first_move)
+
+    _prompt_for_intent_textual(
+        world,
+        "hero",
+        interaction=careful_interaction,  # type: ignore[arg-type]
+        identity_profile=careful,
+    )
+    _prompt_for_intent_textual(
+        world,
+        "hero",
+        interaction=bold_interaction,  # type: ignore[arg-type]
+        identity_profile=bold,
+    )
+
+    careful_options = careful_interaction.menus[1][1][:3]
+    bold_options = bold_interaction.menus[1][1][:3]
+    assert [option.value for option in careful_options] == [
+        option.value for option in bold_options
+    ]
+    assert [option.description for option in careful_options] != [
+        option.description for option in bold_options
+    ]
+
+
 def test_cancel_before_first_action_does_not_create_phantom_history(tmp_path: Path) -> None:
-    interaction = FakeInteraction(CharacterClass.WARRIOR, None)
+    interaction = FakeInteraction(CharacterClass.WARRIOR, *_IDENTITY_ANSWERS, None)
     history_root = tmp_path / "history"
 
     with pytest.raises(EOFError, match="행동 선택"):
@@ -134,6 +294,7 @@ def test_textual_home_shows_resolved_turn_story_before_continue_choice(tmp_path:
     interaction = FakeInteraction(
         "start",
         CharacterClass.WARRIOR,
+        *_IDENTITY_ANSWERS,
         wait,
         False,
         "exit",
@@ -165,6 +326,7 @@ def test_textual_ai_delegation_names_the_action_it_actually_resolved(tmp_path: P
     interaction = FakeInteraction(
         "start",
         CharacterClass.WARRIOR,
+        *_IDENTITY_ANSWERS,
         _AI_CHOICE,
         False,
         "exit",
@@ -199,6 +361,7 @@ def test_textual_fatal_hour_shows_story_without_continue_menu(
     interaction = FakeInteraction(
         "start",
         CharacterClass.MAGE,
+        *_IDENTITY_ANSWERS,
         ActionIntent("hero", ActionKind.MOVE, target_location_id="vault-1"),
         "exit",
         name="유리별",

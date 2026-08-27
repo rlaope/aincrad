@@ -15,6 +15,7 @@ dist/
 runs/
 artifacts/
 *.jsonl
+!tests/fixtures/*.jsonl
 
 # Local workflow state
 .omh/

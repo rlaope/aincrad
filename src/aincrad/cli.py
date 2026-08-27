@@ -7,7 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +20,13 @@ from aincrad.agents import (
     Perception,
     StoryDirector,
     perceive,
+)
+from aincrad.commentary import (
+    DestinationCandidate,
+    HermesKimiCommentaryAdapter,
+    MovementCommentaryRequest,
+    MovementCommentaryResult,
+    deterministic_commentary,
 )
 from aincrad.content.events import LIFE_EVENT_CATALOG
 from aincrad.domain import (
@@ -34,7 +41,18 @@ from aincrad.domain import (
     Stats,
     WorldState,
 )
-from aincrad.domain.identity import HERO_ID, HeroNameError, validate_hero_name
+from aincrad.domain.identity import (
+    HERO_ID,
+    IDENTITY_DIMENSIONS,
+    CharacterIdentityError,
+    CharacterIdentityProfile,
+    CoreValue,
+    HeroNameError,
+    InquiryStance,
+    RelationshipStance,
+    RiskAttitude,
+    validate_hero_name,
+)
 from aincrad.domain.rules import apply_intent
 from aincrad.domain.story import (
     StoryIntent,
@@ -70,7 +88,7 @@ from aincrad.tui import (
 )
 from aincrad.tui.keys import Key, KeyReader, PosixKeyReader
 from aincrad.tui.layout import wrap_display
-from aincrad.tui.localization import location_name_ko
+from aincrad.tui.localization import location_description_ko, location_name_ko
 from aincrad.tui.menu import MenuController, MenuOutcome
 from aincrad.tui.narrative import (
     NO_STORY_EVENT_TEXT,
@@ -97,6 +115,7 @@ class SimulationResult:
 
 Runner = Callable[..., SimulationResult]
 ReplayRunner = Callable[..., SimulationResult]
+CommentaryProvider = Callable[[MovementCommentaryRequest], MovementCommentaryResult]
 
 
 class _ResizeGeneration:
@@ -160,6 +179,8 @@ _BASE_TIME = datetime(2025, 12, 31, 15, tzinfo=UTC)  # 2026-01-01 00:00 KST
 _INITIAL_RHEA_RELATIONSHIP = 55
 _OBJECTIVE_RELATIONSHIP_DELTA = 5
 _AI_CHOICE = object()
+_MOVE_CHOICE = object()
+_OTHER_DESTINATIONS = object()
 _ACTION_LABELS = {
     "move": "이동",
     "rest": "휴식",
@@ -181,12 +202,52 @@ _CHARACTER_OPTIONS = (
     (CharacterClass.MAGE, "마법사", "세이블 퀼", Stats(14, 14, 20, 20)),
     (CharacterClass.TANK, "탱커", "브란 실드", Stats(30, 30, 6, 6)),
 )
+_DEFAULT_IDENTITY_PROFILE = CharacterIdentityProfile(
+    inquiry_stance=InquiryStance.CURIOUS,
+    risk_attitude=RiskAttitude.BALANCED,
+    core_value=CoreValue.GROWTH,
+    relationship_stance=RelationshipStance.COOPERATIVE,
+)
 _CHARACTER_DESCRIPTIONS = {
     CharacterClass.WARRIOR: "근접 전투와 생존의 균형이 좋습니다",
     CharacterClass.ARCHER: "민첩하게 거리를 유지하며 기회를 노립니다",
     CharacterClass.MAGE: "높은 MP로 강력한 선택지를 준비합니다",
     CharacterClass.TANK: "높은 HP로 파티의 위험을 받아냅니다",
 }
+
+
+def _prompt_identity_textual(interaction: TextualInteraction) -> CharacterIdentityProfile:
+    enum_types = {
+        "inquiry_stance": InquiryStance,
+        "risk_attitude": RiskAttitude,
+        "core_value": CoreValue,
+        "relationship_stance": RelationshipStance,
+    }
+    selected: dict[str, object] = {}
+    for dimension in IDENTITY_DIMENSIONS:
+        enum_type = enum_types[dimension.key]
+        answer = interaction.choose(
+            dimension.label,
+            tuple(
+                MenuOption(
+                    option.label,
+                    "해설의 관점만 조정하며 세계 판정에는 영향을 주지 않습니다",
+                    enum_type(option.value),
+                )
+                for option in dimension.options
+            ),
+            subtitle=dimension.question,
+            allow_back=True,
+        )
+        if answer is None:
+            return _DEFAULT_IDENTITY_PROFILE
+        selected[dimension.key] = answer
+    return CharacterIdentityProfile(
+        inquiry_stance=selected["inquiry_stance"],  # type: ignore[arg-type]
+        risk_attitude=selected["risk_attitude"],  # type: ignore[arg-type]
+        core_value=selected["core_value"],  # type: ignore[arg-type]
+        relationship_stance=selected["relationship_stance"],  # type: ignore[arg-type]
+    )
 
 
 def _prompt_for_character(*, stdin: TextIO, stdout: TextIO) -> CharacterClass:
@@ -467,6 +528,109 @@ def _choose_ai_intent(world: WorldState, actor_id: str) -> ActionIntent:
     )
 
 
+def _identity_labels_ko(profile: CharacterIdentityProfile) -> tuple[str, ...]:
+    labels: list[str] = []
+    for dimension in IDENTITY_DIMENSIONS:
+        selected_value = getattr(profile, dimension.key).value
+        selected_label = next(
+            option.label for option in dimension.options if option.value == selected_value
+        )
+        labels.append(f"{dimension.label}: {selected_label}")
+    return tuple(labels)
+
+
+def _movement_commentary_request(
+    world: WorldState,
+    actor_id: str,
+    identity_profile: CharacterIdentityProfile,
+) -> MovementCommentaryRequest:
+    adventurer = world.adventurers[actor_id]
+    location = world.locations[adventurer.location_id]
+    destinations = tuple(
+        DestinationCandidate(
+            destination_id=destination_id,
+            name_ko=location_name_ko(destination_id),
+            description_ko=location_description_ko(destination_id),
+            order=index,
+        )
+        for index, destination_id in enumerate(sorted(location.connections))
+    )
+    return MovementCommentaryRequest(
+        current_location_name_ko=location_name_ko(location.id),
+        current_location_description_ko=location_description_ko(location.id),
+        hp_summary_ko=f"HP {adventurer.stats.hp}/{adventurer.stats.max_hp}",
+        mp_summary_ko=f"MP {adventurer.stats.mp}/{adventurer.stats.max_mp}",
+        identity_labels_ko=_identity_labels_ko(identity_profile),
+        destinations=destinations,
+    )
+
+
+def _prompt_for_movement_textual(
+    world: WorldState,
+    actor_id: str,
+    *,
+    interaction: TextualInteraction,
+    identity_profile: CharacterIdentityProfile,
+    commentary_provider: Callable[
+        [MovementCommentaryRequest], MovementCommentaryResult
+    ] = deterministic_commentary,
+) -> ControlledAction:
+    move_intents = tuple(
+        intent
+        for intent in _available_intents(world, actor_id)
+        if intent.action is ActionKind.MOVE
+    )
+    by_destination = {
+        intent.target_location_id: intent
+        for intent in move_intents
+        if intent.target_location_id is not None
+    }
+    commentary = commentary_provider(
+        _movement_commentary_request(world, actor_id, identity_profile)
+    )
+    recommendation_options: tuple[MenuOption[object], ...] = tuple(
+        MenuOption[object](
+            location_name_ko(recommendation.destination_id),
+            recommendation.commentary_ko,
+            by_destination[recommendation.destination_id],
+        )
+        for recommendation in commentary.recommendations
+    )
+    selected = interaction.choose(
+        "이동할 곳",
+        recommendation_options
+        + (
+            MenuOption[object](
+                "기타 목적지",
+                "연결된 모든 목적지를 확인합니다",
+                _OTHER_DESTINATIONS,
+            ),
+        ),
+        subtitle="해설을 읽고 다음 한 시간을 보낼 목적지를 고르세요",
+        allow_back=True,
+    )
+    if selected is None:
+        raise EOFError("이동 선택이 취소되었습니다")
+    if selected is _OTHER_DESTINATIONS:
+        selected = interaction.choose(
+            "기타 목적지",
+            tuple(
+                MenuOption[object](
+                    location_name_ko(intent.target_location_id or ""),
+                    location_description_ko(intent.target_location_id or ""),
+                    intent,
+                )
+                for intent in move_intents
+            ),
+            subtitle="현재 위치와 직접 이어진 길만 표시합니다",
+            allow_back=True,
+        )
+        if selected is None:
+            raise EOFError("이동 선택이 취소되었습니다")
+    assert isinstance(selected, ActionIntent)
+    return ControlledAction(selected, "user", "user.selected")
+
+
 def _prompt_for_intent(
     world: WorldState, actor_id: str, *, stdin: TextIO, stdout: TextIO
 ) -> ActionIntent:
@@ -567,8 +731,14 @@ def _prompt_for_intent_textual(
     actor_id: str,
     *,
     interaction: TextualInteraction,
+    identity_profile: CharacterIdentityProfile = _DEFAULT_IDENTITY_PROFILE,
+    commentary_provider: Callable[
+        [MovementCommentaryRequest], MovementCommentaryResult
+    ] = deterministic_commentary,
 ) -> ControlledAction:
     allowed = _available_intents(world, actor_id)
+    move_intents = tuple(intent for intent in allowed if intent.action is ActionKind.MOVE)
+    local_intents = tuple(intent for intent in allowed if intent.action is not ActionKind.MOVE)
     adventurer = world.adventurers[actor_id]
     party_size = sum(
         world.adventurers[member_id].alive
@@ -587,13 +757,19 @@ def _prompt_for_intent_textual(
         party_size=party_size,
         width=80,
     )
-    options: tuple[MenuOption[object], ...] = tuple(
+    options: tuple[MenuOption[object], ...] = (
+        MenuOption[object](
+            "이동하기",
+            f"연결된 길 {len(move_intents)}곳을 물리적·사회적 맥락과 함께 살펴봅니다",
+            _MOVE_CHOICE,
+        ),
+    ) + tuple(
         MenuOption[object](
             _intent_label(intent, world),
             _intent_description(intent, world),
             intent,
         )
-        for intent in allowed
+        for intent in local_intents
     ) + (
         MenuOption[object](
             "AI 판단에 맡기기",
@@ -612,6 +788,14 @@ def _prompt_for_intent_textual(
     if selected is _AI_CHOICE:
         return ControlledAction(
             _choose_ai_intent(world, actor_id), "baseline_policy", "policy.baseline"
+        )
+    if selected is _MOVE_CHOICE:
+        return _prompt_for_movement_textual(
+            world,
+            actor_id,
+            interaction=interaction,
+            identity_profile=identity_profile,
+            commentary_provider=commentary_provider,
         )
     assert isinstance(selected, ActionIntent)
     return ControlledAction(selected, "user", "user.selected")
@@ -982,6 +1166,8 @@ def _default_run(
     force: bool,
     character_class: CharacterClass | None = None,
     hero_name: str | None = None,
+    identity_profile: CharacterIdentityProfile | None = None,
+    commentary_provider: CommentaryProvider = deterministic_commentary,
     history_root: Path | None = None,
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
@@ -1091,6 +1277,9 @@ def _default_run(
     if hero_name is None:
         raise AssertionError("hero name selection did not produce a name")
     validated_name = validate_hero_name(hero_name)
+    if identity_profile is None and interaction is not None and not headless:
+        identity_profile = _prompt_identity_textual(interaction)
+    selected_identity = identity_profile or _DEFAULT_IDENTITY_PROFILE
     initial = _starting_world(selected_class, validated_name)
     archive = HistoryArchive(history_root) if history_root is not None else None
     run_number: int | None = None
@@ -1111,6 +1300,7 @@ def _default_run(
                     ),
                     "hero_id": HERO_ID,
                     "hero_name": validated_name,
+                    "identity": selected_identity.to_json(),
                     "event_log": str(output) if output is not None else "",
                 }
             )
@@ -1220,6 +1410,8 @@ def _default_run(
                     world,
                     actor_id,
                     interaction=interaction,
+                    identity_profile=selected_identity,
+                    commentary_provider=commentary_provider,
                 )
             if key_reader is not None:
                 return _prompt_for_intent_menu(
@@ -1316,13 +1508,14 @@ def _default_run(
             log.append(
                 {
                     "record_type": "run_init",
-                    "version": 2,
-                    "schema_version": 2,
+                    "version": 3,
+                    "schema_version": 3,
                     "rules_version": 1,
                     "world_id": "glassfrontier",
                     "seed": seed,
                     "hero_id": HERO_ID,
                     "hero_name": validated_name,
+                    "identity": selected_identity.to_json(),
                     "character_class": selected_class.value,
                     "hero_control": "delegated" if headless else "interactive",
                     "expected_tick_count": completed_hours,
@@ -1335,7 +1528,7 @@ def _default_run(
                 stored_tick = log.append(
                     {
                         "record_type": "tick",
-                        "version": 2,
+                        "version": 3,
                         "tick": trace.story_intent.tick - 1,
                         "proposals": [
                             {
@@ -1372,7 +1565,7 @@ def _default_run(
             log.append(
                 {
                     "record_type": "run_end",
-                    "version": 2,
+                    "version": 3,
                     "expected_tick_count": completed_hours,
                     "final_tick": result.final_state.tick,
                     "final_world_digest": final_world_digest,
@@ -1516,13 +1709,13 @@ def _replay_action(
     return world, event
 
 
-def _strict_replay_v2(
-    records: tuple[StoredEvent, ...], *, hash_verified: bool
+def _strict_replay_versioned(
+    records: tuple[StoredEvent, ...], *, hash_verified: bool, expected_version: int
 ) -> SimulationResult:
     if len(records) < 3:
         raise ValueError("versioned replay requires run initialization, ticks, and run terminator")
     init = records[0].event
-    if not isinstance(init, dict) or set(init) != {
+    init_keys = {
         "record_type",
         "version",
         "schema_version",
@@ -1536,12 +1729,15 @@ def _strict_replay_v2(
         "expected_tick_count",
         "final_tick",
         "final_world_digest",
-    }:
+    }
+    if expected_version == 3:
+        init_keys.add("identity")
+    if not isinstance(init, dict) or set(init) != init_keys:
         raise ValueError("invalid versioned run initialization")
     if (
         init["record_type"] != "run_init"
-        or init["version"] != 2
-        or init["schema_version"] != 2
+        or init["version"] != expected_version
+        or init["schema_version"] != expected_version
         or init["rules_version"] != 1
         or init["world_id"] != "glassfrontier"
         or init["hero_id"] != HERO_ID
@@ -1555,20 +1751,35 @@ def _strict_replay_v2(
         or len(init["final_world_digest"]) != 64
     ):
         raise ValueError("unsupported versioned run initialization")
+    if expected_version == 3:
+        identity = init["identity"]
+        if not isinstance(identity, dict):
+            raise ValueError("versioned run identity must be an object")
+        CharacterIdentityProfile.from_json(identity)
     terminator = records[-1].event
-    if not isinstance(terminator, dict) or set(terminator) != {
-        "record_type",
-        "version",
-        "expected_tick_count",
-        "final_tick",
-        "final_world_digest",
-        "last_tick_event_hash",
-    }:
+    if (
+        not isinstance(terminator, dict)
+        or set(terminator)
+        != {
+            "record_type",
+            "version",
+            "expected_tick_count",
+            "final_tick",
+            "final_world_digest",
+            "last_tick_event_hash",
+        }
+        or type(terminator["record_type"]) is not str
+        or type(terminator["version"]) is not int
+        or type(terminator["expected_tick_count"]) is not int
+        or type(terminator["final_tick"]) is not int
+        or type(terminator["final_world_digest"]) is not str
+        or type(terminator["last_tick_event_hash"]) is not str
+    ):
         raise ValueError("versioned replay requires a canonical run terminator")
     tick_records = records[1:-1]
     if (
         terminator["record_type"] != "run_end"
-        or terminator["version"] != 2
+        or terminator["version"] != expected_version
         or terminator["expected_tick_count"] != init["expected_tick_count"]
         or terminator["final_tick"] != init["final_tick"]
         or terminator["final_world_digest"] != init["final_world_digest"]
@@ -1597,7 +1808,7 @@ def _strict_replay_v2(
         }:
             raise ValueError(f"record {record.seq} must be a canonical tick")
         if (
-            payload.get("version") != 2
+            payload.get("version") != expected_version
             or type(payload["tick"]) is not int
             or payload["tick"] != world.tick
         ):
@@ -1741,7 +1952,7 @@ def _strict_replay_v2(
             )
         expected_tick = {
             "record_type": "tick",
-            "version": 2,
+            "version": expected_version,
             "tick": world.tick,
             "proposals": raw_proposals,
             "action_events": [to_json_value(event) for event in hourly.events],
@@ -1774,7 +1985,14 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
         and isinstance(records[0].event, dict)
         and records[0].event.get("record_type") == "run_init"
     ):
-        return _strict_replay_v2(records, hash_verified=verify_hash)
+        schema_version = records[0].event.get("schema_version")
+        if type(schema_version) is not int or schema_version not in {2, 3}:
+            raise ValueError("unsupported versioned run initialization")
+        return _strict_replay_versioned(
+            records,
+            hash_verified=verify_hash,
+            expected_version=schema_version,
+        )
     world = create_initial_world()
     if records:
         first_actor = _event_fields(records[0])[2]
@@ -1867,6 +2085,15 @@ def _render_history_details(archive: HistoryArchive, run_number: int) -> str:
         f"══ {run.run_number}회차 히스토리 ══",
         f"주인공: {hero_name} · {character_class}",
     ]
+    raw_identity = run.metadata.get("identity")
+    if isinstance(raw_identity, Mapping):
+        try:
+            profile = CharacterIdentityProfile.from_json(raw_identity)
+        except CharacterIdentityError:
+            lines.append("조사 관점: 확인할 수 없는 기록")
+        else:
+            lines.append("조사 관점")
+            lines.extend(_identity_labels_ko(profile))
     if not run.timeline:
         lines.append("(기록 없음)")
     for record in run.timeline:
@@ -2130,8 +2357,14 @@ def _run_home_textual(
     history_root: Path,
     interaction: TextualInteraction,
 ) -> int:
+    commentary_provider: CommentaryProvider = deterministic_commentary
     home_options = (
         MenuOption("새 모험", "직업과 이름을 정해 첫 시간을 시작합니다", "start"),
+        MenuOption(
+            "해설 AI",
+            "로컬 규칙 해설 또는 사용자 인증 Kimi를 선택합니다",
+            "commentator",
+        ),
         MenuOption("히스토리", "저장된 여정의 시간별 기록을 엽니다", "history"),
         MenuOption("종료", "터미널로 돌아갑니다", "exit"),
     )
@@ -2143,6 +2376,30 @@ def _run_home_textual(
         )
         if selected in {None, "exit"}:
             return 0
+        if selected == "commentator":
+            commentator = interaction.choose(
+                "해설 AI 설정",
+                (
+                    MenuOption[str | None](
+                        "Kimi ultrafast",
+                        "Hermes의 기존 인증을 사용하며 실패하면 로컬 해설로 전환합니다",
+                        "kimi",
+                    ),
+                    MenuOption[str | None](
+                        "로컬 규칙 해설",
+                        "네트워크 없이 같은 상태에서 같은 해설을 만듭니다",
+                        "deterministic",
+                    ),
+                    MenuOption[str | None]("뒤로", "현재 설정을 유지합니다", None),
+                ),
+                subtitle="AI는 설명만 하며 세계 상태와 판정은 바꾸지 않습니다",
+                allow_back=True,
+            )
+            if commentator == "kimi":
+                commentary_provider = HermesKimiCommentaryAdapter().commentary
+            elif commentator == "deterministic":
+                commentary_provider = deterministic_commentary
+            continue
         if selected == "history":
             archive = HistoryArchive(history_root)
             runs = archive.list_runs()
@@ -2242,6 +2499,7 @@ def _run_home_textual(
                 output=output_path,
                 force=False,
                 history_root=history_root,
+                commentary_provider=commentary_provider,
                 stdin=stdin,
                 stdout=stdout,
                 trace_continue_decider=continue_after_hour,

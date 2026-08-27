@@ -7,7 +7,7 @@ from typing import Generic, TypeVar, cast
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, VerticalScroll
-from textual.events import Key
+from textual.events import Key, Resize
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Label, ListItem, ListView, Static
 
@@ -77,9 +77,10 @@ class MenuScreen(ModalScreen[int | None]):
             yield ListView(
                 *(
                     ListItem(
+                        Static(option.label, classes="option-label", markup=False),
                         Static(
-                            option.label
-                            + (f"\n{option.description}" if option.description else ""),
+                            option.description,
+                            classes="option-description",
                             markup=False,
                         ),
                         id=f"option-{index}",
@@ -96,6 +97,14 @@ class MenuScreen(ModalScreen[int | None]):
 
     def on_mount(self) -> None:
         self.query_one("#menu", ListView).focus()
+        self._set_compact_descriptions(self.app.size.width < 50)
+
+    def on_resize(self, event: Resize) -> None:
+        self._set_compact_descriptions(event.size.width < 50)
+
+    def _set_compact_descriptions(self, compact: bool) -> None:
+        for description in self.query(".option-description"):
+            description.display = not compact
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         index = self.query_one("#menu", ListView).index
@@ -289,6 +298,13 @@ class AincradTextualApp(App[int]):
         padding: 0 2;
         color: #c7c0b2;
     }
+    .option-label, .option-description {
+        height: auto;
+    }
+    .option-description {
+        color: #9ea8b3;
+    }
+
     ListView:focus > ListItem.-highlight {
         background: #694c2b;
         color: #fff3d6;
