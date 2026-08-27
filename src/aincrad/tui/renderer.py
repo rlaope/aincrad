@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+from aincrad.domain.display import character_width, safe_terminal_text
+from aincrad.tui.layout import (
+    clip_display,
+    display_width,
+    pad_display,
+    wrap_display,
+)
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -36,22 +43,17 @@ class RunSummary:
 
 
 def _char_width(character: str) -> int:
-    return 2 if unicodedata.east_asian_width(character) in {"F", "W"} else 1
+    return character_width(character)
 
 
 def _display_width(text: str) -> int:
-    return sum(_char_width(character) for character in text)
+    return display_width(text)
 
 
 def sanitize_terminal_text(text: str) -> str:
     """Neutralize controls, including Unicode format and bidi characters."""
 
-    return "".join(
-        character
-        if character.isprintable() and unicodedata.category(character)[0] != "C"
-        else "�"
-        for character in text
-    )
+    return safe_terminal_text(text)
 
 
 def _safe_text(text: str) -> str:
@@ -59,45 +61,15 @@ def _safe_text(text: str) -> str:
 
 
 def _clip(text: str, width: int) -> str:
-    if _display_width(text) <= width:
-        return text
-    if width <= 1:
-        return "…"[:width]
-    result: list[str] = []
-    used = 0
-    for character in text:
-        character_width = _char_width(character)
-        if used + character_width > width - 1:
-            break
-        result.append(character)
-        used += character_width
-    return "".join(result) + "…"
+    return clip_display(text, width)
 
 
 def _pad(text: str, width: int) -> str:
-    clipped = _clip(text, width)
-    return clipped + " " * (width - _display_width(clipped))
+    return pad_display(text, width)
 
 
 def _wrap(text: str, width: int) -> list[str]:
-    if not text:
-        return [""]
-    lines: list[str] = []
-    current: list[str] = []
-    used = 0
-    for character in text:
-        if character == "\n":
-            lines.append("".join(current))
-            current, used = [], 0
-            continue
-        character_width = _char_width(character)
-        if current and used + character_width > width:
-            lines.append("".join(current).rstrip())
-            current, used = [], 0
-        current.append(character)
-        used += character_width
-    lines.append("".join(current).rstrip())
-    return lines
+    return wrap_display(text, width)
 
 
 def _section(title: str, width: int) -> str:

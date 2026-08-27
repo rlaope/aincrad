@@ -16,6 +16,22 @@ _ALT_SCREEN_OFF = "\x1b[?1049l"
 _CURSOR_HIDE = "\x1b[?25l"
 _CURSOR_SHOW = "\x1b[?25h"
 _CLEAR_FRAME = "\x1b[H\x1b[2J"
+_REVERSE_ON = "\x1b[7m"
+_STYLE_RESET = "\x1b[0m"
+
+
+def _emphasize_selection(frame: str) -> str:
+    lines: list[str] = []
+    for line_index, line in enumerate(frame.splitlines(keepends=True)):
+        ending = "\n" if line.endswith("\n") else ""
+        content = line.removesuffix("\n")
+        if line_index != 1 and content.startswith("│ ◆ "):
+            inner = content[2:-2]
+            selected = inner.rstrip()
+            padding = inner[len(selected) :]
+            content = f"│ {_REVERSE_ON}{selected}{_STYLE_RESET}{padding} │"
+        lines.append(content + ending)
+    return "".join(lines)
 
 
 class AnsiScreen:
@@ -32,7 +48,7 @@ class AnsiScreen:
     def draw(self, frame: str) -> None:
         """Replace the current alternate-screen frame."""
 
-        self._output.write(_CLEAR_FRAME + frame)
+        self._output.write(_CLEAR_FRAME + _emphasize_selection(frame))
         self._output.flush()
 
     def __exit__(

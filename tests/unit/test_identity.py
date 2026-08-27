@@ -56,8 +56,9 @@ def test_hero_name_cell_limit_has_deterministic_narrow_and_wide_boundaries() -> 
     assert validate_hero_name("a" * 24) == "a" * 24
     assert validate_hero_name("한" * 12) == "한" * 12
     assert validate_hero_name("🌟" * 12) == "🌟" * 12
+    assert validate_hero_name("❤️" * 12) == "❤️" * 12
 
-    for raw in ("a" * 25, "한" * 13, "🌟" * 13):
+    for raw in ("a" * 25, "한" * 13, "🌟" * 13, "❤️" * 13):
         with pytest.raises(HeroNameError, match="24"):
             validate_hero_name(raw)
 
@@ -68,6 +69,29 @@ def test_combining_marks_are_preserved_and_have_zero_cell_width() -> None:
     assert validate_hero_name(name) == name
 
 
-def test_hero_name_rejects_zero_display_cells() -> None:
-    with pytest.raises(HeroNameError, match="display cells"):
+def test_hero_name_rejects_zero_width_only_input() -> None:
+    with pytest.raises(HeroNameError, match="unsupported Unicode sequence"):
         validate_hero_name("\u0301")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "\u0301A",
+        "\ufe0fA",
+        "\u20e3A",
+        "🏽A",
+        "A \u0301B",
+        "👩‍💻",
+        "👍🏽🏽",
+        "🚗🏽",
+        "🇰🏽",
+    ],
+)
+def test_hero_name_rejects_unattached_extenders_and_zwj(raw: str) -> None:
+    with pytest.raises(HeroNameError, match="unsupported Unicode sequence"):
+        validate_hero_name(raw)
+
+
+def test_hero_name_accepts_exact_emoji_modifier_base_sequence() -> None:
+    assert validate_hero_name("👍🏽") == "👍🏽"

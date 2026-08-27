@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import inspect
 import os
+import shutil
+import signal
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
@@ -68,8 +70,15 @@ from aincrad.tui import (
     sanitize_terminal_text,
 )
 from aincrad.tui.keys import Key, KeyReader, PosixKeyReader
+from aincrad.tui.layout import wrap_display
 from aincrad.tui.menu import MenuController, MenuOutcome
-from aincrad.tui.screens import MenuChoice, render_menu
+from aincrad.tui.screens import (
+    MenuChoice,
+    render_menu,
+    render_status_context,
+    render_text_screen,
+    text_screen_body_capacity,
+)
 from aincrad.tui.terminal import AnsiScreen, RawTerminal
 
 
@@ -82,6 +91,24 @@ class SimulationResult:
 
 Runner = Callable[..., SimulationResult]
 ReplayRunner = Callable[..., SimulationResult]
+
+
+class _ResizeGeneration:
+    """Coalesce resize signals without erasing a newer notification."""
+
+    def __init__(self) -> None:
+        self._generation = 0
+        self._consumed_generation = 0
+
+    def notify(self, *_signal_args: object) -> None:
+        self._generation += 1
+
+    def consume(self) -> bool:
+        generation = self._generation
+        if generation == self._consumed_generation:
+            return False
+        self._consumed_generation = generation
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +149,7 @@ Chooser = Callable[[WorldState, str], ActionIntent | ControlledAction]
 HourObserver = Callable[[int, EngineSimulationResult], None]
 ContinueDecider = Callable[[WorldState], bool]
 TraceObserver = Callable[[int, TickTrace], None]
+TraceContinueDecider = Callable[[WorldState, TickTrace], bool]
 _BASE_TIME = datetime(2025, 12, 31, 15, tzinfo=UTC)  # 2026-01-01 00:00 KST
 _INITIAL_RHEA_RELATIONSHIP = 55
 _OBJECTIVE_RELATIONSHIP_DELTA = 5
@@ -147,6 +175,12 @@ _CHARACTER_OPTIONS = (
     (CharacterClass.MAGE, "마법사", "세이블 퀼", Stats(14, 14, 20, 20)),
     (CharacterClass.TANK, "탱커", "브란 실드", Stats(30, 30, 6, 6)),
 )
+_CHARACTER_DESCRIPTIONS = {
+    CharacterClass.WARRIOR: "근접 전투와 생존의 균형이 좋습니다",
+    CharacterClass.ARCHER: "민첩하게 거리를 유지하며 기회를 노립니다",
+    CharacterClass.MAGE: "높은 MP로 강력한 선택지를 준비합니다",
+    CharacterClass.TANK: "높은 HP로 파티의 위험을 받아냅니다",
+}
 
 
 def _prompt_for_character(*, stdin: TextIO, stdout: TextIO) -> CharacterClass:
@@ -171,6 +205,87 @@ def _prompt_for_character(*, stdin: TextIO, stdout: TextIO) -> CharacterClass:
         stdout.write(f"1~{len(_CHARACTER_OPTIONS)} 사이의 번호를 입력하세요.\n")
 
 
+def _screen_width() -> int:
+    return min(100, max(40, shutil.get_terminal_size((80, 24)).columns))
+
+
+def _screen_height() -> int:
+    return max(1, shutil.get_terminal_size((80, 24)).lines)
+
+
+def _show_text_screen(
+    title: str,
+    body_lines: Sequence[str],
+    *,
+    key_reader: KeyReader,
+    stdout: TextIO,
+    frame_writer: Callable[[str], None] | None,
+) -> None:
+    offset = 0
+    while True:
+        width = _screen_width()
+        height = _screen_height()
+        wrapped = tuple(
+            wrapped_line
+            for source_line in body_lines
+            for wrapped_line in wrap_display(
+                sanitize_terminal_text(source_line), width - 4
+            )
+        )
+        scroll_hint = "↑↓ / W S 스크롤 · Enter / Esc 뒤로"
+        viewport_size = max(
+            1,
+            text_screen_body_capacity(
+                title,
+                scroll_hint,
+                width=width,
+                height=height,
+            ),
+        )
+        max_offset = max(0, len(wrapped) - viewport_size)
+        offset = min(offset, max_offset)
+        visible = wrapped[offset : offset + viewport_size]
+        scrollable = len(wrapped) > viewport_size
+        hint = (
+            scroll_hint
+            if scrollable
+            else "Enter 또는 Esc로 뒤로"
+        )
+        viewport_size = max(
+            1,
+            text_screen_body_capacity(
+                title,
+                hint,
+                width=width,
+                height=height,
+            ),
+        )
+        max_offset = max(0, len(wrapped) - viewport_size)
+        offset = min(offset, max_offset)
+        visible = wrapped[offset : offset + viewport_size]
+        frame = render_text_screen(
+            title,
+            visible,
+            hint=hint,
+            width=width,
+            height=height,
+        )
+        if frame_writer is None:
+            stdout.write(frame)
+            stdout.flush()
+        else:
+            frame_writer(frame)
+        key = key_reader.read_key()
+        if key is Key.INTERRUPT:
+            raise KeyboardInterrupt
+        if key in {Key.ENTER, Key.BACK, Key.EOF, Key.QUIT}:
+            return
+        if key is Key.UP:
+            offset = max(0, offset - 1)
+        elif key is Key.DOWN:
+            offset = min(max_offset, offset + 1)
+
+
 def _select_menu(
     title: str,
     choices: Sequence[MenuChoice],
@@ -180,14 +295,23 @@ def _select_menu(
     stdout: TextIO,
     allow_back: bool = False,
     frame_writer: Callable[[str], None] | None = None,
+    subtitle: str = "",
+    context: Sequence[str] = (),
+    width: int | None = None,
 ) -> object | None:
     controller = MenuController(tuple(zip(choices, values, strict=True)))
     while True:
+        frame_width = width if width is not None else _screen_width()
+        frame_height = _screen_height()
         frame = render_menu(
             title,
             choices,
             controller.selected_index,
+            subtitle=subtitle,
+            context=context,
             allow_back=allow_back,
+            width=frame_width,
+            height=frame_height,
         )
         if frame_writer is None:
             stdout.write(frame)
@@ -199,6 +323,10 @@ def _select_menu(
             raise KeyboardInterrupt
         if key in {Key.EOF, Key.QUIT}:
             return None
+        if frame_height < 8:
+            if key is Key.BACK and allow_back:
+                return None
+            continue
         result = controller.handle_key(key)
         if result is None:
             continue
@@ -215,15 +343,21 @@ def _prompt_for_character_menu(
     frame_writer: Callable[[str], None] | None = None,
 ) -> CharacterClass | None:
     choices = tuple(
-        MenuChoice(label, f"HP {stats.max_hp} · MP {stats.max_mp}")
-        for _, label, _, stats in _CHARACTER_OPTIONS
+        MenuChoice(
+            label,
+            f"HP {stats.max_hp} · MP {stats.max_mp} · {_CHARACTER_DESCRIPTIONS[character_class]}",
+        )
+        for character_class, label, _, stats in _CHARACTER_OPTIONS
     )
     selected = _select_menu(
-        "직업 선택", choices, tuple(item[0] for item in _CHARACTER_OPTIONS),
+        "직업 선택",
+        choices,
+        tuple(item[0] for item in _CHARACTER_OPTIONS),
         key_reader=key_reader,
         stdout=stdout,
         allow_back=True,
         frame_writer=frame_writer,
+        subtitle="주인공의 역할을 선택하세요",
     )
     return selected if isinstance(selected, CharacterClass) else None
 
@@ -306,6 +440,20 @@ def _intent_label(intent: ActionIntent, world: WorldState) -> str:
     return _ACTION_LABELS.get(action, action)
 
 
+def _intent_description(intent: ActionIntent, world: WorldState) -> str:
+    action = intent.action.value if isinstance(intent.action, ActionKind) else str(intent.action)
+    if action == ActionKind.MOVE.value and intent.target_location_id is not None:
+        destination = world.locations[intent.target_location_id]
+        return f"{destination.name}에서 다음 한 시간을 보냅니다"
+    descriptions = {
+        ActionKind.GATHER.value: "현재 지역에서 자원과 단서를 찾습니다",
+        ActionKind.TRADE.value: "보유 자원을 판매해 여정을 준비합니다",
+        ActionKind.REST.value: "안전한 곳에서 HP와 MP를 회복합니다",
+        ActionKind.WAIT.value: "이동하지 않고 주변의 변화를 지켜봅니다",
+    }
+    return descriptions.get(action, "이 행동을 다음 한 시간 동안 수행합니다")
+
+
 def _choose_ai_intent(world: WorldState, actor_id: str) -> ActionIntent:
     """Delegate one actor using only that actor's detached perception."""
 
@@ -359,7 +507,29 @@ def _prompt_for_intent_menu(
     frame_writer: Callable[[str], None] | None = None,
 ) -> ControlledAction:
     allowed = _available_intents(world, actor_id)
-    choices = tuple(MenuChoice(_intent_label(intent, world)) for intent in allowed) + (
+    frame_width = _screen_width()
+    adventurer = world.adventurers[actor_id]
+    party_size = sum(
+        world.adventurers[member_id].alive
+        for member_id in (world.party.member_ids if world.party is not None else (actor_id,))
+    )
+    day, hour = divmod(world.tick, 24)
+    context = render_status_context(
+        day=day + 1,
+        hour=hour,
+        location=world.locations[adventurer.location_id].name,
+        hp=adventurer.stats.hp,
+        max_hp=adventurer.stats.max_hp,
+        mp=adventurer.stats.mp,
+        max_mp=adventurer.stats.max_mp,
+        level=adventurer.level,
+        party_size=party_size,
+        width=frame_width,
+    )
+    choices = tuple(
+        MenuChoice(_intent_label(intent, world), _intent_description(intent, world))
+        for intent in allowed
+    ) + (
         MenuChoice("AI 판단에 맡기기", "현재 관찰 정보로 결정"),
     )
     selected = _select_menu(
@@ -370,6 +540,9 @@ def _prompt_for_intent_menu(
         stdout=stdout,
         allow_back=False,
         frame_writer=frame_writer,
+        subtitle="다음 한 시간의 행동을 고르세요",
+        context=context,
+        width=frame_width,
     )
     if selected is None:
         raise EOFError("행동 선택이 취소되었습니다")
@@ -414,6 +587,7 @@ def _run_hours(
     direct_hero_only: bool = False,
     story_director: StoryDirector | None = None,
     continue_decider: ContinueDecider | None = None,
+    trace_continue_decider: TraceContinueDecider | None = None,
     trace_observer: TraceObserver | None = None,
 ) -> CollaborativeResult:
     """Run canonical hourly action batches followed by exactly one story decision."""
@@ -540,6 +714,8 @@ def _run_hours(
             raise ValueError("world has no runtime party")
         if not world.adventurers[current_party.selected_hero_id].alive:
             break
+        if trace_continue_decider is not None and not trace_continue_decider(world, trace):
+            break
         if continue_decider is not None and not continue_decider(world):
             break
     return CollaborativeResult(world, tuple(events), tuple(proposals), tuple(traces))
@@ -620,6 +796,44 @@ def _event_view(event: DomainEvent, world: WorldState) -> EventView:
     )
 
 
+def _continue_context(
+    world: WorldState, trace: TickTrace, *, width: int
+) -> tuple[str, ...]:
+    party = world.party
+    if party is None:
+        raise ValueError("world has no runtime party")
+    hero = world.adventurers[party.selected_hero_id]
+    day, hour = divmod(world.tick, 24)
+    status = render_status_context(
+        day=day + 1,
+        hour=hour,
+        location=world.locations[hero.location_id].name,
+        hp=hero.stats.hp,
+        max_hp=hero.stats.max_hp,
+        mp=hero.stats.mp,
+        max_mp=hero.stats.max_mp,
+        level=hero.level,
+        party_size=sum(world.adventurers[item].alive for item in party.member_ids),
+        width=width,
+    )
+    action_lines = tuple(
+        f"{_event_view(event, world).kind} · {_event_message(event, world)}"
+        for event in trace.action_events[-3:]
+    )
+    template = next(
+        (
+            item
+            for item in LIFE_EVENT_CATALOG
+            if item.id == trace.story_resolution.event.template_id
+        ),
+        None,
+    )
+    story_line = (
+        template.display_text_ko if template is not None else "이야기 흐름이 조용히 이어집니다"
+    )
+    return (*status, "", "최근 일지", *action_lines, f"이야기 · {story_line}")
+
+
 def _adventurer_views(world: WorldState) -> tuple[AdventurerView, ...]:
     party = world.party
     visible_ids = party.member_ids if party is not None else tuple(world.adventurers)
@@ -680,6 +894,7 @@ def _default_run(
     key_reader: KeyReader | None = None,
     story_director: StoryDirector | None = None,
     continue_decider: ContinueDecider | None = None,
+    trace_continue_decider: TraceContinueDecider | None = None,
     frame_writer: Callable[[str], None] | None = None,
 ) -> SimulationResult:
     total_hours = hours if hours is not None else (days or 0) * 24
@@ -711,7 +926,36 @@ def _default_run(
                 if candidate is selected_class
             )
         elif isinstance(key_reader, PosixKeyReader):
-            hero_name = key_reader.read_text_line(output_stream, "주인공 이름: ")
+            if frame_writer is None:
+                hero_name = key_reader.read_text_line(output_stream, "주인공 이름: ")
+            else:
+                class_label = next(
+                    label
+                    for candidate, label, _, _ in _CHARACTER_OPTIONS
+                    if candidate is selected_class
+                )
+
+                def redraw_name(value: str) -> None:
+                    shown_value = sanitize_terminal_text(value) if value else ""
+                    frame_writer(
+                        render_text_screen(
+                            "주인공 이름",
+                            (
+                                f"이름 › {shown_value}▌",
+                                f"{class_label} · 모험 중 표시할 이름을 정하세요",
+                            ),
+                            hint="한글·영문 최대 24칸 · Enter 확정 · Esc 뒤로",
+                            width=_screen_width(),
+                            height=_screen_height(),
+                        )
+                    )
+
+                hero_name = key_reader.read_text_line(
+                    output_stream,
+                    "",
+                    redraw=redraw_name,
+                    accept_input=lambda: _screen_height() >= 8,
+                )
         else:
             output_stream.write("주인공 이름: ")
             output_stream.flush()
@@ -862,6 +1106,8 @@ def _default_run(
         def render_hour(completed_hours: int, hourly: EngineSimulationResult) -> None:
             nonlocal rendered_event_count
             rendered_event_count += len(hourly.events)
+            if frame_writer is not None:
+                return
             status = "완료" if completed_hours == total_hours else "진행 중"
             output_stream.write(
                 render_simulation(
@@ -894,6 +1140,7 @@ def _default_run(
         direct_hero_only=not headless,
         story_director=story_director,
         continue_decider=continue_decider,
+        trace_continue_decider=trace_continue_decider,
         trace_observer=remember_trace,
     )
     party = result.final_state.party
@@ -1620,31 +1867,40 @@ def _run_home_keyboard(
     frame_writer: Callable[[str], None] | None = None,
 ) -> int:
     home_choices = (
-        MenuChoice("시작하기", "새로운 모험"),
-        MenuChoice("히스토리", "저장된 회차 보기"),
-        MenuChoice("종료", "게임 닫기"),
+        MenuChoice("새 모험", "직업과 이름을 정해 첫 시간을 시작합니다"),
+        MenuChoice("히스토리", "저장된 여정의 시간별 기록을 엽니다"),
+        MenuChoice("종료", "터미널로 돌아갑니다"),
     )
     while True:
         selected = _select_menu(
-            "The Glass Frontier · 홈",
+            "메인 메뉴",
             home_choices,
             ("start", "history", "exit"),
             key_reader=key_reader,
             stdout=stdout,
             frame_writer=frame_writer,
+            subtitle="새로운 여정을 시작하거나 기록된 모험을 열람합니다",
         )
         if selected in {None, "exit"}:
             return 0
         if selected == "history":
             archive = HistoryArchive(history_root)
-            stdout.write(_render_history_list(archive))
             runs = archive.list_runs()
             if not runs:
+                _show_text_screen(
+                    "히스토리",
+                    ("기록된 회차가 없습니다",),
+                    key_reader=key_reader,
+                    stdout=stdout,
+                    frame_writer=frame_writer,
+                )
                 continue
             run_choices = tuple(
                 MenuChoice(
                     f"{run.run_number}회차 · "
-                    f"{_history_text(run.metadata.get('hero_name', '알 수 없음'))}"
+                    f"{_history_text(run.metadata.get('hero_name', '알 수 없음'))}",
+                    f"{_history_text(run.metadata.get('character_class_ko', '직업 미상'))} · "
+                    f"시드 {run.metadata.get('seed', '?')}",
                 )
                 for run in runs
             ) + (MenuChoice("홈으로"),)
@@ -1656,9 +1912,19 @@ def _run_home_keyboard(
                 stdout=stdout,
                 allow_back=True,
                 frame_writer=frame_writer,
+                subtitle="열어볼 여정을 선택하세요",
             )
             if isinstance(run_number, int):
-                stdout.write(_render_history_details(archive, run_number))
+                detail_lines = _render_history_details(archive, run_number).splitlines()
+                if detail_lines and detail_lines[0].startswith("══"):
+                    detail_lines = detail_lines[1:]
+                _show_text_screen(
+                    f"{run_number}회차 기록",
+                    tuple(detail_lines),
+                    key_reader=key_reader,
+                    stdout=stdout,
+                    frame_writer=frame_writer,
+                )
             continue
         if runner is not None:
             result = runner(
@@ -1678,15 +1944,20 @@ def _run_home_keyboard(
             )
             continue
 
-        def continue_after_hour(world: WorldState) -> bool:
-            del world
+        def continue_after_hour(world: WorldState, trace: TickTrace) -> bool:
+            context = _continue_context(world, trace, width=_screen_width())
             choice = _select_menu(
-                "다음 시간을 진행할까요?",
-                (MenuChoice("계속하기"), MenuChoice("홈으로")),
+                "여정 계속",
+                (
+                    MenuChoice("다음 시간 진행", "파티가 각자의 다음 행동을 선택합니다"),
+                    MenuChoice("여정 저장 후 홈으로", "현재 기록을 보존하고 홈으로 돌아갑니다"),
+                ),
                 (True, False),
                 key_reader=key_reader,
                 stdout=stdout,
                 frame_writer=frame_writer,
+                subtitle="다음 시간을 진행할까요?",
+                context=context,
             )
             return choice is True
 
@@ -1702,7 +1973,7 @@ def _run_home_keyboard(
                 stdin=stdin,
                 stdout=stdout,
                 key_reader=key_reader,
-                continue_decider=continue_after_hour,
+                trace_continue_decider=continue_after_hour,
                 frame_writer=frame_writer,
             )
         except (EOFError, HeroNameError):
@@ -1735,16 +2006,25 @@ def main(
                 )
             if input_stream.isatty() and stream.isatty():
                 fd = input_stream.fileno()
-                with RawTerminal(fd), AnsiScreen(stream) as screen:
-                    return _run_home(
-                        runner=runner,
-                        replayer=replayer,
-                        stdin=input_stream,
-                        stdout=stream,
-                        history_root=home_history_root,
-                        key_reader=PosixKeyReader(fd=fd),
-                        frame_writer=screen.draw,
-                    )
+                resize_generation = _ResizeGeneration()
+                previous_resize_handler = signal.getsignal(signal.SIGWINCH)
+                signal.signal(signal.SIGWINCH, resize_generation.notify)
+                try:
+                    with RawTerminal(fd), AnsiScreen(stream) as screen:
+                        return _run_home(
+                            runner=runner,
+                            replayer=replayer,
+                            stdin=input_stream,
+                            stdout=stream,
+                            history_root=home_history_root,
+                            key_reader=PosixKeyReader(
+                                fd=fd,
+                                resize_pending=resize_generation.consume,
+                            ),
+                            frame_writer=screen.draw,
+                        )
+                finally:
+                    signal.signal(signal.SIGWINCH, previous_resize_handler)
             stream.write(
                 "대화형 화면에는 TTY가 필요합니다. "
                 "자동 실행은 `aincrad simulate --headless`를 사용하세요.\n"

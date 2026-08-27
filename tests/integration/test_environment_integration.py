@@ -10,18 +10,25 @@ from aincrad.agents import BaselineStoryDirector
 from aincrad.cli import (
     ControlledAction,
     _apply_objective_relationship,
+    _continue_context,
     _default_replay,
     _default_run,
     _next_home_log_path,
+    _prompt_for_intent_menu,
+    _ResizeGeneration,
     _run_hours,
+    _select_menu,
+    _show_text_screen,
     _starting_world,
     main,
 )
 from aincrad.domain import ActionIntent, ActionKind, CharacterClass
-from aincrad.domain.identity import HERO_ID
+from aincrad.domain.identity import HERO_ID, HeroNameError
 from aincrad.domain.story import StoryPerception, StoryState
 from aincrad.persistence import EventLog
-from aincrad.tui.keys import Key
+from aincrad.tui.keys import Key, PosixKeyReader
+from aincrad.tui.layout import display_width
+from aincrad.tui.screens import MenuChoice
 
 
 class Keys:
@@ -30,6 +37,16 @@ class Keys:
 
     def read_key(self) -> Key:
         return next(self.keys)
+
+
+def test_resize_generation_preserves_signals_after_each_consumption() -> None:
+    resize = _ResizeGeneration()
+
+    resize.notify()
+    assert resize.consume() is True
+    resize.notify()
+    assert resize.consume() is True
+    assert resize.consume() is False
 
 
 def test_injected_home_uses_korean_non_numeric_keyboard_menu(tmp_path: Path) -> None:
@@ -42,8 +59,263 @@ def test_injected_home_uses_korean_non_numeric_keyboard_menu(tmp_path: Path) -> 
         home_history_root=tmp_path / "history",
     ) == 0
     rendered = output.getvalue()
-    assert all(label in rendered for label in ("시작하기", "히스토리", "종료"))
+    assert all(label in rendered for label in ("새 모험", "히스토리", "종료"))
     assert not any(prefix in rendered for prefix in ("1.", "2.", "3."))
+
+
+def test_menu_remeasures_terminal_width_without_losing_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    widths = iter((80, 40))
+    frames: list[str] = []
+    monkeypatch.setattr("aincrad.cli._screen_width", lambda: next(widths))
+
+    selected = _select_menu(
+        "크기 변경",
+        (MenuChoice("첫 항목"), MenuChoice("둘째 항목")),
+        ("first", "second"),
+        key_reader=Keys(Key.DOWN, Key.ENTER),
+        stdout=StringIO(),
+        frame_writer=frames.append,
+    )
+
+    assert selected == "second"
+    assert all(display_width(line) == 80 for line in frames[0].splitlines())
+    assert all(display_width(line) == 40 for line in frames[1].splitlines())
+    assert "◆ 둘째 항목" in frames[1]
+
+
+def test_menu_ignores_hidden_navigation_and_selection_below_eight_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames: list[str] = []
+    monkeypatch.setattr("aincrad.cli._screen_width", lambda: 40)
+    monkeypatch.setattr("aincrad.cli._screen_height", lambda: 7)
+
+    selected = _select_menu(
+        "위험한 선택",
+        (MenuChoice("안전"), MenuChoice("파괴")),
+        ("safe", "destructive"),
+        key_reader=Keys(Key.DOWN, Key.ENTER, Key.QUIT),
+        stdout=StringIO(),
+        frame_writer=frames.append,
+    )
+
+    assert selected is None
+    assert len(frames) == 3
+    assert all("안전" not in frame and "파괴" not in frame for frame in frames)
+
+
+def test_text_screen_scrolls_within_terminal_height(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames: list[str] = []
+    monkeypatch.setattr("aincrad.cli._screen_width", lambda: 40)
+    monkeypatch.setattr("aincrad.cli._screen_height", lambda: 12)
+
+    _show_text_screen(
+        "긴 기록",
+        tuple(f"기록 {index}" for index in range(10)),
+        key_reader=Keys(Key.DOWN, Key.DOWN, Key.ENTER),
+        stdout=StringIO(),
+        frame_writer=frames.append,
+    )
+
+    assert len(frames) == 3
+    assert "기록 0" in frames[0]
+    assert "기록 0" not in frames[-1]
+    assert "기록 5" in frames[-1]
+    assert all(len(frame.splitlines()) <= 12 for frame in frames)
+    assert all(
+        display_width(line) == 40
+        for frame in frames
+        for line in frame.splitlines()
+    )
+
+
+def test_text_screen_accounts_for_wrapped_title_below_twelve_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames: list[str] = []
+    monkeypatch.setattr("aincrad.cli._screen_width", lambda: 40)
+    monkeypatch.setattr("aincrad.cli._screen_height", lambda: 8)
+
+    _show_text_screen(
+        "아주 긴 히스토리 상세 제목 " * 4,
+        tuple(f"기록 {index}" for index in range(5)),
+        key_reader=Keys(Key.ENTER),
+        stdout=StringIO(),
+        frame_writer=frames.append,
+    )
+
+    assert len(frames[-1].splitlines()) <= 8
+    assert "기록 0" in frames[-1]
+
+
+def test_action_menu_shows_decision_context_and_keeps_ai_last() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    frames: list[str] = []
+
+    selected = _prompt_for_intent_menu(
+        world,
+        HERO_ID,
+        key_reader=Keys(Key.ENTER),
+        stdout=StringIO(),
+        frame_writer=frames.append,
+    )
+
+    assert selected.controller == "user"
+    frame = frames[-1]
+    assert "유리별의 행동" in frame
+    assert "1일차 00:00" in frame
+    assert "Emberfall" in frame
+    assert "HP 24/24" in frame
+    assert "MP 8/8" in frame
+    assert "Lv.1" in frame
+    assert "파티 1명" in frame
+    assert frame.rindex("AI 판단에 맡기기") > frame.rindex("대기")
+
+
+def test_continue_context_preserves_recent_action_and_story_journal() -> None:
+    result = _run_hours(
+        _starting_world(CharacterClass.WARRIOR, "유리별"),
+        seed=7,
+        hours=1,
+        chooser=lambda _world, actor_id: ActionIntent(actor_id, ActionKind.WAIT),
+        direct_hero_only=True,
+    )
+
+    context = _continue_context(result.final_state, result.traces[-1], width=80)
+
+    assert context[0].startswith("1일차 01:00 · Emberfall")
+    assert "최근 일지" in context
+    assert any("대기" in line for line in context)
+    assert any("이야기" in line for line in context)
+
+
+def test_interactive_hourly_projection_uses_only_owned_frame_writer() -> None:
+    output = StringIO()
+    frames: list[str] = []
+
+    _default_run(
+        seed=42,
+        hours=1,
+        headless=False,
+        output=None,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+        hero_name="유리별",
+        key_reader=Keys(Key.ENTER),
+        stdin=StringIO(),
+        stdout=output,
+        continue_decider=lambda _world: False,
+        frame_writer=frames.append,
+    )
+
+    assert frames
+    assert output.getvalue() == ""
+
+
+def test_owned_name_input_frame_respects_live_terminal_height(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded = iter("별\r\r".encode())
+    frames: list[str] = []
+    monkeypatch.setattr("aincrad.cli._screen_width", lambda: 40)
+    monkeypatch.setattr("aincrad.cli._screen_height", lambda: 8)
+
+    _default_run(
+        seed=42,
+        hours=1,
+        headless=False,
+        output=None,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+        hero_name=None,
+        key_reader=PosixKeyReader(
+            read_bytes=lambda _size: bytes((next(encoded),)),
+        ),
+        stdin=StringIO(),
+        stdout=StringIO(),
+        continue_decider=lambda _world: False,
+        frame_writer=frames.append,
+    )
+
+    name_frames = [frame for frame in frames if "주인공 이름" in frame]
+    assert name_frames
+    assert all(len(frame.splitlines()) <= 8 for frame in name_frames)
+    assert all("이름 ›" in frame for frame in name_frames)
+
+
+def test_owned_name_input_rejects_hidden_text_and_enter_below_eight_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded = iter("숨김\r\r\x1b".encode())
+    monkeypatch.setattr("aincrad.cli._screen_width", lambda: 40)
+    monkeypatch.setattr("aincrad.cli._screen_height", lambda: 6)
+
+    with pytest.raises(EOFError, match="cancelled"):
+        _default_run(
+            seed=42,
+            hours=1,
+            headless=False,
+            output=None,
+            force=False,
+            character_class=CharacterClass.WARRIOR,
+            hero_name=None,
+            key_reader=PosixKeyReader(
+                read_bytes=lambda _size: bytes((next(encoded),)),
+            ),
+            stdin=StringIO(),
+            stdout=StringIO(),
+            continue_decider=lambda _world: False,
+            frame_writer=lambda _frame: None,
+        )
+
+
+def test_owned_name_input_rejects_zwj_sequence() -> None:
+    encoded = iter("👩‍💻".encode())
+
+    with pytest.raises(ValueError, match="control or format"):
+        _default_run(
+            seed=42,
+            hours=1,
+            headless=False,
+            output=None,
+            force=False,
+            character_class=CharacterClass.WARRIOR,
+            hero_name=None,
+            key_reader=PosixKeyReader(
+                read_bytes=lambda _size: bytes((next(encoded),)),
+            ),
+            stdin=StringIO(),
+            stdout=StringIO(),
+            continue_decider=lambda _world: False,
+            frame_writer=lambda _frame: None,
+        )
+
+
+@pytest.mark.parametrize("raw", ["👍🏽🏽", "🚗🏽", "🇰🏽"])
+def test_owned_name_input_rejects_invalid_modifier_sequence(raw: str) -> None:
+    encoded = iter((raw + "\r").encode())
+
+    with pytest.raises(HeroNameError, match="unsupported Unicode sequence"):
+        _default_run(
+            seed=42,
+            hours=1,
+            headless=False,
+            output=None,
+            force=False,
+            character_class=CharacterClass.WARRIOR,
+            hero_name=None,
+            key_reader=PosixKeyReader(
+                read_bytes=lambda _size: bytes((next(encoded),)),
+            ),
+            stdin=StringIO(),
+            stdout=StringIO(),
+            continue_decider=lambda _world: False,
+            frame_writer=lambda _frame: None,
+        )
 
 
 def test_starting_world_uses_stable_hero_and_keeps_candidates_outside_party() -> None:

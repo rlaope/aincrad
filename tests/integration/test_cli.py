@@ -150,6 +150,7 @@ def test_home_history_lists_and_opens_a_saved_run(tmp_path: Path) -> None:
             Key.DOWN,
             Key.ENTER,
             Key.ENTER,
+            Key.ENTER,
             Key.DOWN,
             Key.DOWN,
             Key.ENTER,
@@ -160,9 +161,11 @@ def test_home_history_lists_and_opens_a_saved_run(tmp_path: Path) -> None:
     )
 
     assert exit_code == 0
-    assert "══ 회차 목록 ══" in stdout.getvalue()
-    assert "1회차 | 레아 베일 · 전사" in stdout.getvalue()
-    assert "══ 1회차 히스토리 ══" in stdout.getvalue()
+    rendered = stdout.getvalue()
+    assert "히스토리 선택" in rendered
+    assert "1회차 · 레아 베일" in rendered
+    assert "1회차 기록" in rendered
+    assert "══" not in rendered
 
 
 def test_interactive_projection_counts_dynamic_party_events(

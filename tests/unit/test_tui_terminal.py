@@ -67,6 +67,27 @@ def test_ansi_screen_draw_replaces_the_current_frame() -> None:
     assert "\x1b[H\x1b[2J둘째 화면\n" in rendered
 
 
+def test_ansi_screen_emphasizes_selected_row_but_not_brand() -> None:
+    output = StringIO()
+    frame = (
+        "╭────────────────────────────╮\n"
+        "│ ◆ THE GLASS FRONTIER       │\n"
+        "│ ◆ 새 모험                  │\n"
+        "│ ◆ THE GLASS FRONTIER 원정대 │\n"
+        "│   히스토리                 │\n"
+    )
+
+    with AnsiScreen(output) as screen:
+        screen.draw(frame)
+
+    rendered = output.getvalue()
+    assert "\x1b[7m◆ 새 모험" in rendered
+    assert "\x1b[7m◆ THE GLASS FRONTIER 원정대" in rendered
+    assert "\x1b[7m◆ THE GLASS FRONTIER       " not in rendered
+    assert rendered.count("\x1b[7m") == 2
+    assert rendered.count("\x1b[0m") == 2
+
+
 class _does_not_raise:
     def __enter__(self) -> None:
         return None
