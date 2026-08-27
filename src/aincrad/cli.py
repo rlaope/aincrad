@@ -70,7 +70,14 @@ from aincrad.tui import (
 )
 from aincrad.tui.keys import Key, KeyReader, PosixKeyReader
 from aincrad.tui.layout import wrap_display
+from aincrad.tui.localization import location_name_ko
 from aincrad.tui.menu import MenuController, MenuOutcome
+from aincrad.tui.narrative import (
+    NO_STORY_EVENT_TEXT,
+    detail_non_negative_int,
+    event_detail_map,
+    render_turn_story,
+)
 from aincrad.tui.screens import (
     MenuChoice,
     render_menu,
@@ -433,7 +440,7 @@ def _perception(world: WorldState, actor_id: str) -> Perception:
 def _intent_label(intent: ActionIntent, world: WorldState) -> str:
     action = intent.action.value if isinstance(intent.action, ActionKind) else str(intent.action)
     if action == ActionKind.MOVE.value and intent.target_location_id is not None:
-        return f"이동 → {world.locations[intent.target_location_id].name}"
+        return f"이동 → {location_name_ko(intent.target_location_id)}"
     if action == ActionKind.TRADE.value:
         return f"거래 (자원 {intent.quantity}개 판매)"
     return _ACTION_LABELS.get(action, action)
@@ -442,8 +449,7 @@ def _intent_label(intent: ActionIntent, world: WorldState) -> str:
 def _intent_description(intent: ActionIntent, world: WorldState) -> str:
     action = intent.action.value if isinstance(intent.action, ActionKind) else str(intent.action)
     if action == ActionKind.MOVE.value and intent.target_location_id is not None:
-        destination = world.locations[intent.target_location_id]
-        return f"{destination.name}에서 다음 한 시간을 보냅니다"
+        return f"{location_name_ko(intent.target_location_id)}에서 다음 한 시간을 보냅니다"
     descriptions = {
         ActionKind.GATHER.value: "현재 지역에서 자원과 단서를 찾습니다",
         ActionKind.TRADE.value: "보유 자원을 판매해 여정을 준비합니다",
@@ -469,7 +475,7 @@ def _prompt_for_intent(
     day, hour = divmod(world.tick, 24)
     stdout.write(
         f"\n[{day + 1}일차 {hour:02d}:00] {adventurer.name} @ "
-        f"{world.locations[adventurer.location_id].name}\n"
+        f"{location_name_ko(adventurer.location_id)}\n"
     )
     for index, intent in enumerate(allowed, start=1):
         stdout.write(f"{index}. {_intent_label(intent, world)}\n")
@@ -516,7 +522,7 @@ def _prompt_for_intent_menu(
     context = render_status_context(
         day=day + 1,
         hour=hour,
-        location=world.locations[adventurer.location_id].name,
+        location=location_name_ko(adventurer.location_id),
         hp=adventurer.stats.hp,
         max_hp=adventurer.stats.max_hp,
         mp=adventurer.stats.mp,
@@ -529,7 +535,10 @@ def _prompt_for_intent_menu(
         MenuChoice(_intent_label(intent, world), _intent_description(intent, world))
         for intent in allowed
     ) + (
-        MenuChoice("AI 판단에 맡기기", "현재 관찰 정보로 결정"),
+        MenuChoice(
+            "AI 판단에 맡기기",
+            "현재 HP·MP·위치·자원·갈 수 있는 길을 비교해 행동 선택",
+        ),
     )
     selected = _select_menu(
         f"{world.adventurers[actor_id].name}의 행동",
@@ -569,7 +578,7 @@ def _prompt_for_intent_textual(
     context = render_status_context(
         day=day + 1,
         hour=hour,
-        location=world.locations[adventurer.location_id].name,
+        location=location_name_ko(adventurer.location_id),
         hp=adventurer.stats.hp,
         max_hp=adventurer.stats.max_hp,
         mp=adventurer.stats.mp,
@@ -585,7 +594,13 @@ def _prompt_for_intent_textual(
             intent,
         )
         for intent in allowed
-    ) + (MenuOption[object]("AI 판단에 맡기기", "현재 관찰 정보로 결정", _AI_CHOICE),)
+    ) + (
+        MenuOption[object](
+            "AI 판단에 맡기기",
+            "현재 HP·MP·위치·자원·갈 수 있는 길을 비교해 행동 선택",
+            _AI_CHOICE,
+        ),
+    )
     selected = interaction.choose(
         f"{adventurer.name}의 행동",
         options,
@@ -760,9 +775,9 @@ def _run_hours(
         current_party = world.party
         if current_party is None:
             raise ValueError("world has no runtime party")
-        if not world.adventurers[current_party.selected_hero_id].alive:
-            break
         if trace_continue_decider is not None and not trace_continue_decider(world, trace):
+            break
+        if not world.adventurers[current_party.selected_hero_id].alive:
             break
         if continue_decider is not None and not continue_decider(world):
             break
@@ -826,13 +841,53 @@ def _event_message(event: DomainEvent, world: WorldState) -> str:
     actor = world.adventurers.get(event.adventurer_id)
     actor_name = actor.name if actor is not None else event.adventurer_id
     action = event.action.value if isinstance(event.action, ActionKind) else str(event.action)
-    label = _ACTION_LABELS.get(action, action)
     if isinstance(event, ActionRejected):
-        return f"{actor_name}: {label} 거부 ({event.reason})"
-    if isinstance(event, ActionSucceeded) and event.details:
-        detail = ", ".join(f"{key}={value}" for key, value in event.details)
-        return f"{actor_name}: {label} 성공 ({detail})"
-    return f"{actor_name}: {label} 성공"
+        reasons = {
+            "unknown_adventurer": "그 모험가를 찾을 수 없었다",
+            "adventurer_dead": "이미 쓰러져 행동할 수 없었다",
+            "unknown_location": "목적지를 찾을 수 없었다",
+            "location_not_connected": "이어진 길이 없었다",
+            "gather_not_allowed": "이곳에서는 채집할 수 없었다",
+            "invalid_gather_yield": "채집 결과가 올바르지 않았다",
+            "trade_not_allowed": "이곳에서는 거래할 수 없었다",
+            "invalid_quantity": "거래 수량이 올바르지 않았다",
+            "insufficient_resources": "팔 자원이 부족했다",
+            "invalid_action": "세계 규칙에 맞지 않는 행동이었다",
+        }
+        return f"{actor_name}: {reasons.get(event.reason, '행동을 실행할 수 없었다')}."
+    if not isinstance(event, ActionSucceeded):
+        return f"{actor_name}: {_ACTION_LABELS.get(action, action)} 판정이 끝났다."
+
+    details = event_detail_map(event)
+    if event.action is ActionKind.MOVE:
+        destination = location_name_ko(event.target_location_id or "")
+        activity = f"{destination}으로 이동했다."
+    elif event.action is ActionKind.REST:
+        activity = "안전한 곳에서 쉬며 몸과 마음을 추슬렀다."
+    elif event.action is ActionKind.GATHER:
+        activity = f"자원 {details.get('resources_gathered', '0')}개를 모았다."
+    elif event.action is ActionKind.TRADE:
+        activity = f"자원 {details.get('resources_sold', str(event.quantity))}개를 팔았다."
+    else:
+        activity = "자리를 지키며 주변을 살폈다."
+
+    results: list[str] = []
+    damage = detail_non_negative_int(details, "damage")
+    if damage:
+        results.append(f"피해 {damage}")
+    hp_restored = detail_non_negative_int(details, "hp_restored")
+    mp_restored = detail_non_negative_int(details, "mp_restored")
+    if hp_restored or mp_restored:
+        results.append(f"HP {hp_restored}, MP {mp_restored} 회복")
+    xp = detail_non_negative_int(details, "xp_awarded")
+    if xp:
+        results.append(f"경험치 {xp} 획득")
+    hp = details.get("hp")
+    mp = details.get("mp")
+    if hp is not None and mp is not None:
+        results.append(f"현재 HP {hp}, MP {mp}")
+    suffix = f" 결과: {' · '.join(results)}." if results else ""
+    return f"{actor_name}: {activity}{suffix}"
 
 
 def _event_view(event: DomainEvent, world: WorldState) -> EventView:
@@ -855,7 +910,7 @@ def _continue_context(
     status = render_status_context(
         day=day + 1,
         hour=hour,
-        location=world.locations[hero.location_id].name,
+        location=location_name_ko(hero.location_id),
         hp=hero.stats.hp,
         max_hp=hero.stats.max_hp,
         mp=hero.stats.mp,
@@ -864,22 +919,13 @@ def _continue_context(
         party_size=sum(world.adventurers[item].alive for item in party.member_ids),
         width=width,
     )
-    action_lines = tuple(
-        f"{_event_view(event, world).kind} · {_event_message(event, world)}"
-        for event in trace.action_events[-3:]
-    )
-    template = next(
-        (
-            item
-            for item in LIFE_EVENT_CATALOG
-            if item.id == trace.story_resolution.event.template_id
-        ),
-        None,
-    )
-    story_line = (
-        template.display_text_ko if template is not None else "이야기 흐름이 조용히 이어집니다"
-    )
-    return (*status, "", "최근 일지", *action_lines, f"이야기 · {story_line}")
+    return (*status, "", "방금 끝난 한 시간의 기록을 확인했습니다.")
+
+
+def _story_event_text(trace: TickTrace) -> str | None:
+    template_id = trace.story_resolution.event.template_id
+    template = next((item for item in LIFE_EVENT_CATALOG if item.id == template_id), None)
+    return template.display_text_ko if template is not None else None
 
 
 def _adventurer_views(world: WorldState) -> tuple[AdventurerView, ...]:
@@ -888,7 +934,7 @@ def _adventurer_views(world: WorldState) -> tuple[AdventurerView, ...]:
     return tuple(
         AdventurerView(
             name=adventurer.name,
-            location=world.locations[adventurer.location_id].name,
+            location=location_name_ko(adventurer.location_id),
             hp=adventurer.stats.hp,
             mp=adventurer.stats.mp,
             activity=_ACTIVITY_LABELS.get(adventurer.activity.value, adventurer.activity.value),
@@ -1101,7 +1147,7 @@ def _default_run(
             )
             story_projection = {
                 "kind": "story_resolution",
-                "scene": template.display_text_ko if template is not None else "이야기 흐름 유지",
+                "scene": template.display_text_ko if template is not None else NO_STORY_EVENT_TEXT,
                 "opportunity": trace.story_intent.kind.value,
                 "evidence_ids": [
                     value
@@ -1240,15 +1286,22 @@ def _default_run(
     completed_hours = result.final_state.tick - initial.tick
     final_world_digest = _world_digest(result.final_state)
     if archive is not None and run_number is not None and not selected_hero.alive:
+        if selected_hero.death_cause == "dungeon_hazard":
+            ending_story = (
+                f"{selected_hero.name}은 던전의 위험으로 쓰러졌다. "
+                "그 죽음은 되돌릴 수 없으며, 이 이야기는 여기서 끝난다."
+            )
+        else:
+            ending_story = (
+                f"{selected_hero.name}은 모험 도중 영원히 쓰러졌다. "
+                "그 죽음은 되돌릴 수 없으며, 이 이야기는 여기서 끝난다."
+            )
         archive.record_character_end(
             run_number,
             {
                 "character_id": selected_hero.id,
                 "ending": "death",
-                "story": (
-                    "모험가는 영원히 쓰러졌고, 이 이야기는 여기서 끝납니다. "
-                    f"(tick={selected_hero.death_tick}, cause={selected_hero.death_cause})"
-                ),
+                "story": ending_story,
             },
         )
     if output is not None:
@@ -1461,21 +1514,6 @@ def _replay_action(
             hazard_damage=int(raw_damage),
         )
     return world, event
-
-
-def _stored_event_view(record: StoredEvent, world: WorldState) -> EventView:
-    tick, _, actor, action, _, _, details, reason = _event_fields(record)
-    label = _ACTION_LABELS.get(action, action)
-    actor_state = world.adventurers.get(actor)
-    actor_name = actor_state.name if actor_state is not None else actor
-    if reason is not None:
-        message = f"{actor_name}: {label} 거부 ({reason})"
-    elif details:
-        pairs = [f"{key}={value}" for key, value in details.items()]
-        message = f"{actor_name}: {label} 성공 ({', '.join(pairs)})"
-    else:
-        message = f"{actor_name}: {label} 성공"
-    return EventView(_BASE_TIME + timedelta(hours=tick), label, message)
 
 
 def _strict_replay_v2(
@@ -1747,6 +1785,7 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
                 raise ValueError(f"unknown starting hero {first_actor}") from error
             world = _starting_world(character_class)
     index = 0
+    display_events: list[DomainEvent] = []
     while index < len(records):
         tick = _event_fields(records[index])[0]
         if tick != world.tick:
@@ -1780,13 +1819,14 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
         for record, event in zip(tick_records, finalized_events, strict=True):
             if to_json_value(event) != record.event:
                 raise ValueError(f"event {record.seq} does not match the engine result")
+        display_events.extend(finalized_events)
         world = replace(world, tick=tick + 1)
         party = world.party
         if party is None:
             raise ValueError("replay world has no runtime party")
         if not world.adventurers[party.selected_hero_id].alive and index < len(records):
             raise ValueError("replay contains records after selected hero became dead")
-    events = tuple(_stored_event_view(record, world) for record in records)
+    events = tuple(_event_view(event, world) for event in display_events)
     days = max(1, (world.tick + 23) // 24)
     status = "해시 검증 완료" if verify_hash else "미검증 재생 완료"
     return SimulationResult(
@@ -1843,8 +1883,20 @@ def _render_history_details(archive: HistoryArchive, run_number: int) -> str:
                         or raw_event.get("kind") != "story_resolution"
                     ):
                         continue
-                    scene = _history_text(raw_event.get("scene", "이야기 흐름 유지"))
-                    opportunity = _history_text(raw_event.get("opportunity", "no_op"))
+                    scene = _history_text(raw_event.get("scene", NO_STORY_EVENT_TEXT))
+                    opportunity_value = raw_event.get("opportunity", "no_op")
+                    opportunity = {
+                        "no_op": "새 사건 없음",
+                        "offer_quest": "새 의뢰",
+                        "complete_quest": "의뢰 완료",
+                        "recruit_companion": "동료 합류",
+                        "depart_companion": "동료 이탈",
+                    }.get(
+                        opportunity_value
+                        if isinstance(opportunity_value, str)
+                        else "",
+                        "알 수 없는 사건",
+                    )
                     evidence = raw_event.get("evidence_ids", [])
                     evidence_text = ", ".join(
                         _history_text(item) for item in evidence if isinstance(item, str)
@@ -2144,6 +2196,24 @@ def _run_home_textual(
             continue
 
         def continue_after_hour(world: WorldState, trace: TickTrace) -> bool:
+            story_lines = render_turn_story(
+                world,
+                trace.action_events,
+                controllers={
+                    proposal.actor_id: proposal.controller
+                    for proposal in trace.proposals
+                },
+                story_event_text=_story_event_text(trace),
+            )
+            interaction.show_text(
+                f"{story_lines[0]} · 한 시간의 기록",
+                story_lines[1:],
+            )
+            party = world.party
+            if party is None:
+                raise ValueError("world has no runtime party")
+            if not world.adventurers[party.selected_hero_id].alive:
+                return False
             choice = interaction.choose(
                 "여정 계속",
                 (

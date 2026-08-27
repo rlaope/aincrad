@@ -219,6 +219,9 @@ def test_text_screen_scrolls_with_w_and_s() -> None:
             await pilot.pause()
             assert isinstance(app.screen, TextScreen)
             scroll = app.screen.query_one("#text-scroll")
+            hint = app.screen.query_one("#hint", Static)
+            assert str(hint.content) == "W/S 스크롤 · Enter 뒤로"
+            assert scroll.styles.padding.right == 2
             assert scroll.scroll_y == 0
             await pilot.press("s")
             await pilot.pause()

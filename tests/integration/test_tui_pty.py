@@ -126,6 +126,14 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         os.write(master_fd, "테스트용사\r".encode())
         action = capture.read_until("테스트용사의 행동")
         assert "1일차 00:00" in action
+        assert "잿불마을" in action
+        assert "Emberfall" not in action
+        os.write(master_fd, b"\r")
+        story = capture.read_until("한 시간의 기록")
+        assert "고요한 심지 여관" in story
+        assert "향했다" in story
+        assert "경험치" in story
+        assert "테스트용사은" not in story
         os.write(master_fd, b"\r")
         capture.read_until("여정 계속")
         os.write(master_fd, b"s\r")

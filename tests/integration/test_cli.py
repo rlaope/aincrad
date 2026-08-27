@@ -25,7 +25,7 @@ from aincrad.cli import (
 )
 from aincrad.domain import ActionIntent, ActionKind, CharacterClass
 from aincrad.history import HistoryArchive
-from aincrad.persistence import GENESIS_HASH, EventLog, StoredEvent
+from aincrad.persistence import GENESIS_HASH, EventLog, StoredEvent, to_json_value
 from aincrad.simulation import SimulationScheduler, create_initial_world
 from aincrad.simulation.scheduler import SimulationResult as EngineSimulationResult
 from aincrad.tui import AdventurerView, EventView, RunSummary
@@ -659,16 +659,26 @@ def test_run_hours_stops_immediately_after_selected_hero_dies() -> None:
     fragile = replace(hero, location_id="mossreach", stats=replace(hero.stats, hp=1))
     world = replace(world, adventurers={fragile.id: fragile})
     calls: list[int] = []
+    story_calls: list[int] = []
 
     def chooser(current, actor_id: str) -> ActionIntent:
         calls.append(current.tick)
         return ActionIntent(actor_id, ActionKind.MOVE, target_location_id="vault-1")
 
-    result = _run_hours(world, seed=1, hours=10, chooser=chooser)
+    result = _run_hours(
+        world,
+        seed=1,
+        hours=10,
+        chooser=chooser,
+        trace_continue_decider=lambda current, _trace: (
+            story_calls.append(current.tick) or True
+        ),
+    )
 
     assert result.final_state.tick == 1
     assert result.final_state.adventurers[fragile.id].alive is False
     assert calls == [0]
+    assert story_calls == [1]
 
 
 def test_dead_hero_history_records_character_end_exactly_once(
@@ -705,6 +715,38 @@ def test_dead_hero_history_records_character_end_exactly_once(
     assert len(endings) == 1
     assert endings[0].payload["character_id"] == "hero"
     assert endings[0].payload["ending"] == "death"
+    ending_story = endings[0].payload["story"]
+    assert isinstance(ending_story, str)
+    assert "던전의 위험으로 쓰러졌다" in ending_story
+    assert "tick=" not in ending_story
+    assert "dungeon_hazard" not in ending_story
+
+
+def test_legacy_replay_projects_korean_without_internal_detail_keys(tmp_path: Path) -> None:
+    world = create_initial_world()
+    result = _run_hours(
+        world,
+        seed=7,
+        hours=1,
+        chooser=lambda _world, actor_id: ActionIntent(
+            actor_id,
+            ActionKind.MOVE,
+            target_location_id="emberfall-inn",
+        ),
+    )
+    event_log = tmp_path / "legacy.jsonl"
+    log = EventLog(event_log)
+    for event in result.traces[0].action_events:
+        log.append(to_json_value(event))
+
+    replayed = _default_replay(event_log=event_log, verify_hash=True)
+    rendered = "\n".join(event.message for event in replayed.events)
+
+    assert "고요한 심지 여관으로 이동했다" in rendered
+    assert "emberfall-inn" not in rendered
+    assert "destination=" not in rendered
+    assert "xp_awarded" not in rendered
+    assert "character_class=" not in rendered
 
 
 @pytest.mark.parametrize("character_class", tuple(CharacterClass))

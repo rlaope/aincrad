@@ -179,7 +179,7 @@ class TextScreen(ModalScreen[None]):
             yield Static(self._title, id="screen-title", markup=False)
             with VerticalScroll(id="text-scroll"):
                 yield Static("\n".join(self._body), markup=False)
-            yield Static("↑↓ / W S 스크롤 · Enter / Esc 뒤로", id="hint", markup=False)
+            yield Static("W/S 스크롤 · Enter 뒤로", id="hint", markup=False)
         yield Footer()
 
     def action_close(self) -> None:
@@ -313,6 +313,7 @@ class AincradTextualApp(App[int]):
     #text-scroll {
         height: 1fr;
         margin-top: 1;
+        padding-right: 2;
         scrollbar-color: #d49a4a;
         scrollbar-background: #172432;
     }

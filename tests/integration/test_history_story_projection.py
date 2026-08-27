@@ -28,7 +28,9 @@ def test_history_associates_replayable_log_and_projects_story_evidence(tmp_path:
     assert event_log.exists()
     story = run.timeline[0].payload["events"][-1]
     assert story["kind"] == "story_resolution"
-    assert story["scene"]
+    assert story["scene"] == (
+        "그 한 시간 동안 새로운 의뢰나 동료의 합류 같은 사건은 일어나지 않았다."
+    )
     assert story["opportunity"]
     assert story["evidence_ids"]
 
@@ -36,4 +38,6 @@ def test_history_associates_replayable_log_and_projects_story_evidence(tmp_path:
     assert main(["history", "show", "1", "--history-root", str(history)], stdout=output) == 0
     assert "새벽별" in output.getvalue()
     assert "[이야기]" in output.getvalue()
+    assert "새 사건 없음" in output.getvalue()
+    assert "no_op" not in output.getvalue()
     assert "근거 ID:" in output.getvalue()

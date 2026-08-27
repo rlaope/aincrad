@@ -168,7 +168,8 @@ def test_action_menu_shows_decision_context_and_keeps_ai_last() -> None:
     frame = frames[-1]
     assert "유리별의 행동" in frame
     assert "1일차 00:00" in frame
-    assert "Emberfall" in frame
+    assert "잿불마을" in frame
+    assert "Emberfall" not in frame
     assert "HP 24/24" in frame
     assert "MP 8/8" in frame
     assert "Lv.1" in frame
@@ -176,7 +177,7 @@ def test_action_menu_shows_decision_context_and_keeps_ai_last() -> None:
     assert frame.rindex("AI 판단에 맡기기") > frame.rindex("대기")
 
 
-def test_continue_context_preserves_recent_action_and_story_journal() -> None:
+def test_continue_context_keeps_korean_status_after_story() -> None:
     result = _run_hours(
         _starting_world(CharacterClass.WARRIOR, "유리별"),
         seed=7,
@@ -187,10 +188,9 @@ def test_continue_context_preserves_recent_action_and_story_journal() -> None:
 
     context = _continue_context(result.final_state, result.traces[-1], width=80)
 
-    assert context[0].startswith("1일차 01:00 · Emberfall")
-    assert "최근 일지" in context
-    assert any("대기" in line for line in context)
-    assert any("이야기" in line for line in context)
+    assert context[0].startswith("1일차 01:00 · 잿불마을")
+    assert "방금 끝난 한 시간의 기록을 확인했습니다." in context
+    assert not any("xp_awarded" in line for line in context)
 
 
 def test_interactive_hourly_projection_uses_only_owned_frame_writer() -> None:
