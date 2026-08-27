@@ -32,17 +32,21 @@
 Python 3.11 이상과 [uv](https://docs.astral.sh/uv/)가 필요합니다.
 
 ```bash
-uv sync --extra dev
+# 저장소 루트에서 한 번만 실행
+uv tool install --editable .
 ```
+
+개발 환경과 검증 도구까지 설치하려면 별도로 `uv sync --extra dev --locked`를
+실행합니다.
 
 ## 실행
 
 ```bash
 # 기본 TUI: 방향키 또는 W/S로 이동하고 Enter로 선택
-uv run aincrad
+aincrad
 ```
 
-설치된 환경에서는 `aincrad`만 입력해도 같은 홈 화면이 열립니다. `새 모험`을
+`aincrad`를 입력하면 Textual이 관리하는 full-screen 홈 화면이 열립니다. `새 모험`을
 선택하면 직업과 표시 이름을 정한 뒤 주인공의 시간별 행동을 고릅니다. TUI는 실제
 터미널 폭에 맞춘 단일 패널 안에서 선택 항목, 시간·장소·HP/MP·레벨·파티 상태와 최근
 일지를 함께 표시합니다. `히스토리`에서는 같은 키보드 화면으로 회차 목록과 상세 기록을
@@ -54,17 +58,17 @@ uv run aincrad
 
 ```bash
 # 이름과 직업을 지정해 한 시간 자동 실행 + 1회차 저장
-uv run aincrad simulate --seed 42 --hours 1 --headless --class warrior \
+aincrad simulate --seed 42 --hours 1 --headless --class warrior \
   --hero-name 한별 --history-root runs/history
 
 # 회차 목록과 상세 페이지
-uv run aincrad history list --history-root runs/history
-uv run aincrad history show 1 --history-root runs/history
+aincrad history list --history-root runs/history
+aincrad history show 1 --history-root runs/history
 
 # AI 정책으로 7일 자동 실행하고 이벤트 로그 저장
-uv run aincrad simulate --seed 42 --days 7 --headless --class mage \
+aincrad simulate --seed 42 --days 7 --headless --class mage \
   --history-root runs/history --output runs/demo
-uv run aincrad replay runs/demo/events.jsonl --verify-hash
+aincrad replay runs/demo/events.jsonl --verify-hash
 ```
 
 기존 이벤트 로그는 증거 보존을 위해 자동으로 덮어쓰지 않습니다. 같은 출력 경로를
@@ -83,7 +87,7 @@ AI policy나 Story Director를 다시 호출하지 않습니다. 성장,
 구현 중인 CLI의 최신 옵션은 다음 명령으로 확인할 수 있습니다.
 
 ```bash
-uv run aincrad --help
+aincrad --help
 ```
 
 ## 검증
@@ -111,6 +115,7 @@ fixtures/                 결정론적 테스트 입력
 
 - [아키텍처](docs/architecture.md)
 - [ADR-0001: 결정론적 코어와 AI 정책 분리](docs/adr/0001-deterministic-core-and-agent-boundary.md)
+- [ADR-0002: Textual 기반 full-screen TUI](docs/adr/0002-textual-full-screen-tui.md)
 - [기여 가이드](CONTRIBUTING.md)
 
 ## 라이선스

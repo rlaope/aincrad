@@ -23,7 +23,11 @@ StoryPerception -> Story Director -> StoryIntent -----------+-> Validator/Resolv
 - `persistence`는 사건을 정규화해 JSONL로 저장하고 해시 체인을 검증합니다.
 - `tui`는 사건과 투영 상태를 읽기만 합니다.
 - 일반 NPC는 첫 버전에서 독립 AI가 아닌 규칙 기반 서비스입니다.
-- TUI는 방향키·W/S·Enter를 사용하며 raw terminal, alternate screen, cursor를 예외에도 복원합니다.
+- 대화형 TUI는 Textual의 widget tree와 diff compositor를 사용합니다. Textual이 raw input,
+  alternate screen, cursor, focus, resize를 소유하고 종료·예외에도 terminal 상태를 복원합니다.
+  simulation은 worker thread에서 결정론적으로 실행되며 `choose`/`input_text` interaction
+  boundary를 통해서만 Textual main loop에 선택을 요청합니다. headless/replay/history CLI는
+  full-screen app과 독립적으로 동작합니다.
 
 ## 시간
 
