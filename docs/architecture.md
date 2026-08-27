@@ -2,13 +2,22 @@
 
 ## 목표
 
-Aincrad는 세계·전투·경제 규칙의 권위와 AI 모험가의 비결정적 판단을 분리합니다. 사용자는 날짜와 시간별 사건, 모험가 상태, 선택 이유와 결과를 터미널에서 관찰합니다.
+Aincrad는 AI 기반 이세계 사회 조사 시뮬레이터입니다. 세계·전투·경제 규칙의 권위와
+AI 모험가 및 해설자의 비결정적 판단을 분리하고, 사용자는 낯선 환경과 사회의 물리적 조건,
+관계, 시간별 사건과 결과를 터미널에서 관찰합니다.
+
+현재 runtime의 일반 NPC는 규칙 기반 시설 서비스입니다. 목표 사회 모델은 named resident가
+일정·drive·grounded memory·방향성 관계·구조화된 encounter를 갖는 형태이며, AI Town runtime을
+port하지 않고 기존 logical-hour kernel 위에 단계적으로 추가합니다. canonical model과 도입
+순서는 `docs/adr/0003-deterministic-otherworld-social-simulation.md`, 근거 조사는
+`docs/research/ai-town-reverse-engineering.md`를 따릅니다.
 
 ## 데이터 흐름
 
 ```text
 Actor Perception -> User/Baseline Policy -> ActionIntent --+
 StoryPerception -> Story Director -> StoryIntent -----------+-> Validator/Resolver
+Public state projection + Identity -> Commentary ----------> Terminal Projection only
                                                             -> DomainEvent
                                                             -> Event Store / Replay
                                                             -> History / Terminal Projection
@@ -23,6 +32,11 @@ StoryPerception -> Story Director -> StoryIntent -----------+-> Validator/Resolv
 - `persistence`는 사건을 정규화해 JSONL로 저장하고 해시 체인을 검증합니다.
 - `tui`는 사건과 투영 상태를 읽기만 합니다.
 - 일반 NPC는 첫 버전에서 독립 AI가 아닌 규칙 기반 서비스입니다.
+- `commentary`는 공개 현재 위치·HP/MP projection, canonical 합법 목적지, run identity만 받아 이동 전
+  물리·사회 해설을 만듭니다. 외부 문장은 untrusted projection이며 action legality,
+  state mutation, event/history/hash에 들어가지 않습니다. Hermes subprocess는 direct argv,
+  bounded stdin/stdout/stderr/time/process group과 strict destination whitelist를 사용하고 모든
+  실패를 결정론적 로컬 해설로 대체합니다.
 - 대화형 TUI는 Textual의 widget tree와 diff compositor를 사용합니다. Textual이 raw input,
   alternate screen, cursor, focus, resize를 소유하고 종료·예외에도 terminal 상태를 복원합니다.
   simulation은 worker thread에서 결정론적으로 실행되며 `choose`/`input_text` interaction
@@ -42,8 +56,14 @@ StoryPerception -> Story Director -> StoryIntent -----------+-> Validator/Resolv
 - 난수는 실행 시드에서 파생합니다.
 - 같은 초기 상태, 규칙 버전, 시드, 행동열은 같은 사건과 최종 상태를 생성해야 합니다.
 - actor RNG는 seed/tick/actor channel에서 독립적으로 파생해 proposal 도착 순서에 의존하지 않습니다.
-- v2 로그는 초기 world/seed/주인공 identity, actor proposal, StoryIntent와 resolution을 저장하고,
+- v3 로그는 초기 world/seed/주인공 표시 정보와 enum-coded human identity profile,
+  actor proposal, StoryIntent와 resolution을 저장하고,
   `run_init`/`run_end`의 완료 tick 수·final tick·world digest commitment로 tail truncation을 거부합니다.
+- strict replay는 JSON 정수 field에 `type(value) is int`를 요구해 Python에서 `true == 1`인
+  언어 특성이 canonical scalar type 검증을 우회하지 못하게 합니다.
+- v2 validator는 별도 strict branch로 유지되며 기존 로그를 rewrite하거나 자동 migration하지 않습니다.
+- human identity는 `WorldState`나 rules modifier가 아니라 hash-covered `run_init`과 history
+  metadata입니다. 해설의 관점만 바꾸며 목적지 집합·추천 순서·판정을 바꾸지 않습니다.
 - replay는 policy나 Story Director를 재호출하지 않고 저장된 proposal을 규칙 엔진에 다시 적용해
   전체 action event와 story resolution payload를 비교합니다.
 
