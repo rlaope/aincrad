@@ -5,7 +5,6 @@ import hashlib
 import inspect
 import os
 import shutil
-import signal
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
@@ -79,7 +78,7 @@ from aincrad.tui.screens import (
     render_text_screen,
     text_screen_body_capacity,
 )
-from aincrad.tui.terminal import AnsiScreen, RawTerminal
+from aincrad.tui.textual_app import AincradTextualApp, MenuOption, TextualInteraction
 
 
 @dataclass(frozen=True)
@@ -554,6 +553,55 @@ def _prompt_for_intent_menu(
     return ControlledAction(selected, "user", "user.selected")
 
 
+def _prompt_for_intent_textual(
+    world: WorldState,
+    actor_id: str,
+    *,
+    interaction: TextualInteraction,
+) -> ControlledAction:
+    allowed = _available_intents(world, actor_id)
+    adventurer = world.adventurers[actor_id]
+    party_size = sum(
+        world.adventurers[member_id].alive
+        for member_id in (world.party.member_ids if world.party is not None else (actor_id,))
+    )
+    day, hour = divmod(world.tick, 24)
+    context = render_status_context(
+        day=day + 1,
+        hour=hour,
+        location=world.locations[adventurer.location_id].name,
+        hp=adventurer.stats.hp,
+        max_hp=adventurer.stats.max_hp,
+        mp=adventurer.stats.mp,
+        max_mp=adventurer.stats.max_mp,
+        level=adventurer.level,
+        party_size=party_size,
+        width=80,
+    )
+    options: tuple[MenuOption[object], ...] = tuple(
+        MenuOption[object](
+            _intent_label(intent, world),
+            _intent_description(intent, world),
+            intent,
+        )
+        for intent in allowed
+    ) + (MenuOption[object]("AI 판단에 맡기기", "현재 관찰 정보로 결정", _AI_CHOICE),)
+    selected = interaction.choose(
+        f"{adventurer.name}의 행동",
+        options,
+        subtitle="다음 한 시간의 행동을 고르세요",
+        context=context,
+    )
+    if selected is None:
+        raise EOFError("행동 선택이 취소되었습니다")
+    if selected is _AI_CHOICE:
+        return ControlledAction(
+            _choose_ai_intent(world, actor_id), "baseline_policy", "policy.baseline"
+        )
+    assert isinstance(selected, ActionIntent)
+    return ControlledAction(selected, "user", "user.selected")
+
+
 def _apply_objective_relationship(story: StoryState, objective_complete: bool) -> StoryState:
     """Apply the explicit +5 objective delta, bounded to the 0..100 domain."""
 
@@ -896,6 +944,7 @@ def _default_run(
     continue_decider: ContinueDecider | None = None,
     trace_continue_decider: TraceContinueDecider | None = None,
     frame_writer: Callable[[str], None] | None = None,
+    interaction: TextualInteraction | None = None,
 ) -> SimulationResult:
     total_hours = hours if hours is not None else (days or 0) * 24
     if total_hours <= 0:
@@ -906,6 +955,23 @@ def _default_run(
     if selected_class is None:
         if headless:
             selected_class = CharacterClass.WARRIOR
+        elif interaction is not None:
+            selected_class = interaction.choose(
+                "직업 선택",
+                tuple(
+                    MenuOption(
+                        label,
+                        f"HP {stats.max_hp} · MP {stats.max_mp} · "
+                        f"{_CHARACTER_DESCRIPTIONS[candidate]}",
+                        candidate,
+                    )
+                    for candidate, label, _, stats in _CHARACTER_OPTIONS
+                ),
+                subtitle="주인공의 역할을 선택하세요",
+                allow_back=True,
+            )
+            if selected_class is None:
+                raise EOFError("직업 선택이 취소되었습니다")
         elif key_reader is not None:
             selected_class = _prompt_for_character_menu(
                 key_reader=key_reader,
@@ -925,6 +991,19 @@ def _default_run(
                 for candidate, _, default_name, _ in _CHARACTER_OPTIONS
                 if candidate is selected_class
             )
+        elif interaction is not None:
+            class_label = next(
+                label
+                for candidate, label, _, _ in _CHARACTER_OPTIONS
+                if candidate is selected_class
+            )
+            hero_name = interaction.input_text(
+                "주인공 이름",
+                subtitle=f"{class_label} · 모험 중 표시할 이름을 정하세요",
+                validate=validate_hero_name,
+            )
+            if hero_name is None:
+                raise EOFError("주인공 이름 입력이 취소되었습니다")
         elif isinstance(key_reader, PosixKeyReader):
             if frame_writer is None:
                 hero_name = key_reader.read_text_line(output_stream, "주인공 이름: ")
@@ -968,24 +1047,28 @@ def _default_run(
     validated_name = validate_hero_name(hero_name)
     initial = _starting_world(selected_class, validated_name)
     archive = HistoryArchive(history_root) if history_root is not None else None
-    run_number = (
-        archive.create_run(
-            {
-                "seed": seed,
-                "character_class": selected_class.value,
-                "character_class_ko": next(
-                    label
-                    for candidate, label, _, _ in _CHARACTER_OPTIONS
-                    if candidate is selected_class
-                ),
-                "hero_id": HERO_ID,
-                "hero_name": validated_name,
-                "event_log": str(output) if output is not None else "",
-            }
-        )
-        if archive is not None
-        else None
-    )
+    run_number: int | None = None
+
+    def ensure_history_run() -> int:
+        nonlocal run_number
+        if archive is None:
+            raise AssertionError("history archive is unavailable")
+        if run_number is None:
+            run_number = archive.create_run(
+                {
+                    "seed": seed,
+                    "character_class": selected_class.value,
+                    "character_class_ko": next(
+                        label
+                        for candidate, label, _, _ in _CHARACTER_OPTIONS
+                        if candidate is selected_class
+                    ),
+                    "hero_id": HERO_ID,
+                    "hero_name": validated_name,
+                    "event_log": str(output) if output is not None else "",
+                }
+            )
+        return run_number
 
     def ai_chooser(world: WorldState, actor_id: str) -> ControlledAction:
         return ControlledAction(
@@ -1001,11 +1084,12 @@ def _default_run(
     def remember_trace(completed_hours: int, trace: TickTrace) -> None:
         hourly_traces[completed_hours] = trace
 
-    if archive is not None and run_number is not None:
+    if archive is not None:
 
         def record_hour(
             completed_hours: int, hourly: EngineSimulationResult
         ) -> None:
+            current_run_number = ensure_history_run()
             trace = hourly_traces[completed_hours]
             template = next(
                 (
@@ -1029,7 +1113,7 @@ def _default_run(
                 ],
             }
             archive.append_hourly(
-                run_number,
+                current_run_number,
                 {
                     "day": (completed_hours - 1) // 24 + 1,
                     "hour": (completed_hours - 1) % 24,
@@ -1061,7 +1145,7 @@ def _default_run(
             )
             if completed_hours % 24 == 0:
                 archive.append_daily_summary(
-                    run_number,
+                    current_run_number,
                     {
                         "day": completed_hours // 24,
                         "survivors": sum(
@@ -1085,6 +1169,12 @@ def _default_run(
         rendered_event_count = 0
 
         def interactive_chooser(world: WorldState, actor_id: str) -> ControlledAction:
+            if interaction is not None:
+                return _prompt_for_intent_textual(
+                    world,
+                    actor_id,
+                    interaction=interaction,
+                )
             if key_reader is not None:
                 return _prompt_for_intent_menu(
                     world,
@@ -1106,7 +1196,7 @@ def _default_run(
         def render_hour(completed_hours: int, hourly: EngineSimulationResult) -> None:
             nonlocal rendered_event_count
             rendered_event_count += len(hourly.events)
-            if frame_writer is not None:
+            if frame_writer is not None or interaction is not None:
                 return
             status = "완료" if completed_hours == total_hours else "진행 중"
             output_stream.write(
@@ -1980,6 +2070,117 @@ def _run_home_keyboard(
             continue
 
 
+def _run_home_textual(
+    *,
+    runner: Runner | None,
+    stdin: TextIO,
+    stdout: TextIO,
+    history_root: Path,
+    interaction: TextualInteraction,
+) -> int:
+    home_options = (
+        MenuOption("새 모험", "직업과 이름을 정해 첫 시간을 시작합니다", "start"),
+        MenuOption("히스토리", "저장된 여정의 시간별 기록을 엽니다", "history"),
+        MenuOption("종료", "터미널로 돌아갑니다", "exit"),
+    )
+    while True:
+        selected = interaction.choose(
+            "메인 메뉴",
+            home_options,
+            subtitle="새로운 여정을 시작하거나 기록된 모험을 열람합니다",
+        )
+        if selected in {None, "exit"}:
+            return 0
+        if selected == "history":
+            archive = HistoryArchive(history_root)
+            runs = archive.list_runs()
+            if not runs:
+                interaction.show_text("히스토리", ("기록된 회차가 없습니다",))
+                continue
+            history_options: tuple[MenuOption[int | None], ...] = tuple(
+                MenuOption[int | None](
+                    f"{run.run_number}회차 · "
+                    f"{_history_text(run.metadata.get('hero_name', '알 수 없음'))}",
+                    f"{_history_text(run.metadata.get('character_class_ko', '직업 미상'))} · "
+                    f"시드 {run.metadata.get('seed', '?')}",
+                    run.run_number,
+                )
+                for run in runs
+            ) + (MenuOption[int | None]("홈으로", "메인 메뉴로 돌아갑니다", None),)
+            run_number = interaction.choose(
+                "히스토리 선택",
+                history_options,
+                subtitle="열어볼 여정을 선택하세요",
+                allow_back=True,
+            )
+            if isinstance(run_number, int):
+                detail_lines = _render_history_details(archive, run_number).splitlines()
+                if detail_lines and detail_lines[0].startswith("══"):
+                    detail_lines = detail_lines[1:]
+                interaction.show_text(f"{run_number}회차 기록", detail_lines)
+            continue
+        if runner is not None:
+            result = runner(
+                seed=42,
+                days=None,
+                hours=1,
+                headless=False,
+                output=None,
+                force=False,
+                character_class=None,
+                history_root=history_root,
+                stdin=stdin,
+                stdout=stdout,
+            )
+            interaction.show_text(
+                "모험 결과",
+                render_simulation(
+                    result.events,
+                    result.adventurers,
+                    result.summary,
+                    width=80,
+                ).splitlines(),
+            )
+            continue
+
+        def continue_after_hour(world: WorldState, trace: TickTrace) -> bool:
+            choice = interaction.choose(
+                "여정 계속",
+                (
+                    MenuOption(
+                        "다음 시간 진행",
+                        "파티가 각자의 다음 행동을 선택합니다",
+                        True,
+                    ),
+                    MenuOption(
+                        "여정 저장 후 홈으로",
+                        "현재 기록을 보존하고 홈으로 돌아갑니다",
+                        False,
+                    ),
+                ),
+                subtitle="다음 시간을 진행할까요?",
+                context=_continue_context(world, trace, width=80),
+            )
+            return choice is True
+
+        output_path = _next_home_log_path(history_root.parent / "playthroughs")
+        try:
+            _default_run(
+                seed=42,
+                hours=MAX_RECORDS - 1,
+                headless=False,
+                output=output_path,
+                force=False,
+                history_root=history_root,
+                stdin=stdin,
+                stdout=stdout,
+                trace_continue_decider=continue_after_hour,
+                interaction=interaction,
+            )
+        except (EOFError, HeroNameError):
+            continue
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -2005,26 +2206,16 @@ def main(
                     key_reader=key_reader,
                 )
             if input_stream.isatty() and stream.isatty():
-                fd = input_stream.fileno()
-                resize_generation = _ResizeGeneration()
-                previous_resize_handler = signal.getsignal(signal.SIGWINCH)
-                signal.signal(signal.SIGWINCH, resize_generation.notify)
-                try:
-                    with RawTerminal(fd), AnsiScreen(stream) as screen:
-                        return _run_home(
-                            runner=runner,
-                            replayer=replayer,
-                            stdin=input_stream,
-                            stdout=stream,
-                            history_root=home_history_root,
-                            key_reader=PosixKeyReader(
-                                fd=fd,
-                                resize_pending=resize_generation.consume,
-                            ),
-                            frame_writer=screen.draw,
-                        )
-                finally:
-                    signal.signal(signal.SIGWINCH, previous_resize_handler)
+                app_result = AincradTextualApp(
+                    lambda interaction: _run_home_textual(
+                        runner=runner,
+                        stdin=input_stream,
+                        stdout=stream,
+                        history_root=home_history_root,
+                        interaction=interaction,
+                    )
+                ).run()
+                return 0 if app_result is None else app_result
             stream.write(
                 "대화형 화면에는 TTY가 필요합니다. "
                 "자동 실행은 `aincrad simulate --headless`를 사용하세요.\n"
