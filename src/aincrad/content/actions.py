@@ -6,7 +6,16 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import cast
 
-from aincrad.domain.models import ActionIntent, ActionKind, ContextualAction, WorldState
+from aincrad.domain.models import (
+    ActionIntent,
+    ActionKind,
+    ContextualAction,
+    FacilityInteraction,
+    InteractionPrompt,
+    InteractionResponse,
+    TerminalEffect,
+    WorldState,
+)
 
 _EXPECTED_ACTION_KINDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
@@ -118,6 +127,73 @@ def action_catalog_from_fixture(
             for location in locations
         }
     )
+
+
+def _interaction(raw: Mapping[str, object]) -> FacilityInteraction:
+    prompts: list[InteractionPrompt] = []
+    for prompt in cast(Sequence[Mapping[str, object]], raw["prompts"]):
+        responses: list[InteractionResponse] = []
+        for response in cast(Sequence[Mapping[str, object]], prompt["responses"]):
+            terminal_raw = response.get("terminal")
+            terminal = None
+            if isinstance(terminal_raw, Mapping):
+                terminal = TerminalEffect(
+                    outcome_code=_required_text(terminal_raw, "outcome_code"),
+                    gold_delta=_integer(terminal_raw, "gold_delta"),
+                    resource_delta=_integer(terminal_raw, "resource_delta"),
+                )
+            responses.append(
+                InteractionResponse(
+                    id=_required_text(response, "id"),
+                    label_ko=_required_text(response, "label_ko"),
+                    aliases_ko=tuple(cast(Sequence[str], response.get("aliases_ko", []))),
+                    next_prompt_id=_optional_text(response, "next_prompt_id"),
+                    terminal=terminal,
+                )
+            )
+        prompts.append(
+            InteractionPrompt(
+                id=_required_text(prompt, "id"),
+                text_ko=_required_text(prompt, "text_ko"),
+                responses=tuple(responses),
+            )
+        )
+    return FacilityInteraction(
+        id=_required_text(raw, "id"),
+        npc_id=_required_text(raw, "npc_id"),
+        title_ko=_required_text(raw, "title_ko"),
+        entry_prompt_id=_required_text(raw, "entry_prompt_id"),
+        prompts=tuple(prompts),
+    )
+
+
+def interaction_catalog_from_fixture(
+    fixture: Mapping[str, object],
+) -> Mapping[str, tuple[FacilityInteraction, ...]]:
+    """Read-only facility incident catalog; it never manufactures an intent."""
+
+    towns = cast(Sequence[Mapping[str, object]], fixture["towns"])
+    return MappingProxyType(
+        {
+            _required_text(facility, "id"): tuple(
+                _interaction(raw)
+                for raw in cast(Sequence[Mapping[str, object]], facility.get("interactions", []))
+            )
+            for town in towns
+            for facility in cast(Sequence[Mapping[str, object]], town["facilities"])
+        }
+    )
+
+
+def available_facility_interactions(
+    world: WorldState, adventurer_id: str, facility_id: str
+) -> tuple[FacilityInteraction, ...]:
+    actor = world.adventurers.get(adventurer_id)
+    if actor is None or facility_id not in world.locations:
+        return ()
+    if actor.location_id not in {facility_id, "emberfall"}:
+        return ()
+    return world.locations[facility_id].interactions
 
 
 def contextual_action_for_intent(

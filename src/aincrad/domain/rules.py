@@ -68,11 +68,7 @@ def _apply_contextual_action(
     before_stats = updated.stats
     updated = restore_stats(updated, hp=action.restore_hp, mp=action.restore_mp)
     encounter_damage = (
-        1
-        if action.kind is ActionKind.FIGHT
-        else 3
-        if action.kind is ActionKind.CHALLENGE
-        else 0
+        1 if action.kind is ActionKind.FIGHT else 3 if action.kind is ActionKind.CHALLENGE else 0
     )
     if encounter_damage:
         updated = apply_damage(
@@ -106,6 +102,65 @@ def _apply_contextual_action(
         details.append(("damage", str(min(before_stats.hp, encounter_damage))))
         if not updated.alive:
             details.append(("life_event", "story-end-permanent-death"))
+    return _succeeded(world, intent, updated, tuple(details))
+
+
+def _apply_interaction(
+    world: WorldState, intent: ActionIntent, adventurer: Adventurer
+) -> tuple[WorldState, tuple[DomainEvent, ...]]:
+    selection = intent.interaction
+    if selection is None:
+        return _rejected(world, intent, "missing_interaction")
+    location = world.locations[adventurer.location_id]
+    incident = next(
+        (item for item in location.interactions if item.id == selection.incident_id),
+        None,
+    )
+    if incident is None:
+        return _rejected(world, intent, "unknown_interaction")
+    prompts = {prompt.id: prompt for prompt in incident.prompts}
+    current_prompt_id = incident.entry_prompt_id
+    terminal = None
+    for index, (prompt_id, response_id) in enumerate(selection.path):
+        if prompt_id != current_prompt_id:
+            return _rejected(world, intent, "invalid_interaction_path")
+        prompt = prompts.get(prompt_id)
+        if prompt is None:
+            return _rejected(world, intent, "invalid_interaction_path")
+        response = next((item for item in prompt.responses if item.id == response_id), None)
+        if response is None:
+            return _rejected(world, intent, "invalid_interaction_path")
+        if response.terminal is not None:
+            if index != len(selection.path) - 1:
+                return _rejected(world, intent, "invalid_interaction_path")
+            terminal = response.terminal
+        elif response.next_prompt_id is not None:
+            if index == len(selection.path) - 1:
+                return _rejected(world, intent, "incomplete_interaction_path")
+            current_prompt_id = response.next_prompt_id
+        else:
+            return _rejected(world, intent, "invalid_interaction_path")
+    if terminal is None:
+        return _rejected(world, intent, "incomplete_interaction_path")
+    if terminal.gold_delta < 0 and adventurer.gold < -terminal.gold_delta:
+        return _rejected(world, intent, "insufficient_gold")
+    updated = replace(
+        adventurer,
+        gold=adventurer.gold + terminal.gold_delta,
+        resources=adventurer.resources + terminal.resource_delta,
+        activity=Activity.SERVICING,
+    )
+    details: list[tuple[str, str]] = [
+        ("location_id", location.id),
+        ("incident_id", incident.id),
+        ("prompt_path", "/".join(prompt_id for prompt_id, _ in selection.path)),
+        ("response_id", selection.path[-1][1]),
+        ("outcome_code", terminal.outcome_code),
+    ]
+    if terminal.gold_delta:
+        details.append(("gold_delta", str(terminal.gold_delta)))
+    if terminal.resource_delta:
+        details.append(("resource_delta", str(terminal.resource_delta)))
     return _succeeded(world, intent, updated, tuple(details))
 
 
@@ -159,6 +214,26 @@ def apply_intent(
         return _rejected(world, intent, "invalid_quantity")
     if intent.action is ActionKind.MOVE and intent.quantity != 1:
         return _rejected(world, intent, "invalid_quantity")
+    if intent.action is not ActionKind.ENGAGE_INCIDENT and intent.interaction is not None:
+        return _rejected(world, intent, "unexpected_interaction")
+    if intent.action is ActionKind.ENGAGE_INCIDENT:
+        if intent.quantity != 1:
+            return _rejected(world, intent, "invalid_quantity")
+        if intent.interaction is None:
+            return _rejected(world, intent, "missing_interaction")
+        if intent.target_location_id is not None:
+            target_location = world.locations.get(intent.target_location_id)
+            if (
+                adventurer.location_id != "emberfall"
+                or target_location is None
+                or intent.target_location_id not in world.locations["emberfall"].connections
+                or target_location.connections != ("emberfall",)
+            ):
+                return _rejected(world, intent, "unexpected_target_location")
+            return _apply_interaction(
+                world, intent, replace(adventurer, location_id=intent.target_location_id)
+            )
+        return _apply_interaction(world, intent, adventurer)
     if intent.action is not ActionKind.MOVE and intent.target_location_id is not None:
         target_location = world.locations.get(intent.target_location_id)
         target_is_connected_facility = (

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from aincrad.content.actions import action_catalog_from_fixture
+from aincrad.content.actions import action_catalog_from_fixture, interaction_catalog_from_fixture
 from aincrad.content.fixtures import load_packaged_world_fixture
 from aincrad.domain import Adventurer, CharacterClass, Location, LocationKind, Stats, WorldState
 
@@ -19,6 +19,7 @@ def create_initial_world(*, content_revision: str = "current") -> WorldState:
 
     fixture = load_packaged_world_fixture(revision=content_revision)
     catalog = action_catalog_from_fixture(fixture)
+    interaction_catalog = interaction_catalog_from_fixture(fixture)
     locations: dict[str, Location] = {}
     town = fixture["towns"][0]
     location_records = [
@@ -52,6 +53,7 @@ def create_initial_world(*, content_revision: str = "current") -> WorldState:
             description=record["description"],
             services=tuple(cast(Sequence[str], record.get("services", []))),
             contextual_actions=catalog[location_id],
+            interactions=interaction_catalog.get(location_id, ()),
         )
     adventurers: dict[str, Adventurer] = {}
     for candidate in fixture["adventurers"]:

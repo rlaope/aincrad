@@ -17,6 +17,9 @@ import pyte
 import pytest
 from wcwidth import wcwidth
 
+from aincrad.cli import _default_replay
+from aincrad.persistence import EventLog
+
 
 class TerminalCapture:
     """Reconstruct the visible terminal cells from cursor-addressed ANSI output."""
@@ -136,7 +139,7 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         assert "상점 · 잿불창고 교역소" in action
         assert "여관 · 고요한 심지 여관" in action
         os.write(master_fd, b"\r")
-        facility = capture.read_until("이 시설에서 보낼 다음 한 시간의 행동을 고르세요")
+        facility = capture.read_until("이 시설에서 보낼 다음 한 시간의 행동이나 부탁을 고르세요")
         assert "잿불창고 교역소" in facility
         assert "상품 목록 보기" in facility
         os.write(master_fd, b"\r")
@@ -163,6 +166,75 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
             process.wait(timeout=2)
         os.close(master_fd)
         os.close(slave_fd)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX terminal contract")
+def test_real_pty_orrin_incident_walk_completes_one_tick_and_replays(tmp_path: Path) -> None:
+    master_fd, slave_fd = pty.openpty()
+    original_attributes = termios.tcgetattr(slave_fd)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "aincrad"],
+        cwd=tmp_path,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+    )
+    capture = TerminalCapture(master_fd, columns=80, lines=24)
+    try:
+        capture.read_until("메인 메뉴")
+        os.write(master_fd, b"\r")
+        capture.read_until("직업 선택")
+        os.write(master_fd, b"\r")
+        capture.read_until("주인공 이름")
+        os.write(master_fd, "재현용사\r".encode())
+        capture.read_until("주인공의 성격")
+        os.write(master_fd, "차분하게 상황을 살핀다.\r".encode())
+        capture.read_until("주인공의 특징")
+        os.write(master_fd, "약속을 지키고 기록을 남긴다.\r".encode())
+        capture.read_until("재현용사의 행동")
+        os.write(master_fd, b"\r")
+        capture.read_until("이 시설에서 보낼 다음 한 시간의 행동이나 부탁을 고르세요")
+        os.write(master_fd, b"ssss\r")
+        opening = capture.read_until("상자를 살펴본다")
+        assert "상자를 살펴본다" in opening
+        os.write(master_fd, b"\r")
+        findings = capture.read_until("금 간 등불을 짚어준다")
+        assert "할인가에 흠집 등불을 산다" in findings
+        os.write(master_fd, b"s\r")
+        capture.read_until("한 시간의 이야기")
+        capture.read_until("한 글자씩 재생 중")
+        os.write(master_fd, b"\r")
+        capture.read_until("이번 시간")
+        os.write(master_fd, b"\r")
+        capture.read_until("여정 계속")
+        os.write(master_fd, b"s\r")
+        capture.read_until("메인 메뉴")
+        os.write(master_fd, b"sss\r")
+        capture.read_until_bytes(b"\x1b[?1049l")
+        assert process.wait(timeout=8) == 0
+        assert termios.tcgetattr(slave_fd) == original_attributes
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        os.close(master_fd)
+        os.close(slave_fd)
+
+    event_logs = list(tmp_path.rglob("*.jsonl"))
+    assert len(event_logs) == 1
+    records = EventLog(event_logs[0]).verify()
+    proposal = records[1].event["proposals"][0]
+    assert proposal["interaction"] == {
+        "incident_id": "orrin-cracked-crate",
+        "path": [
+            ["crate-opening", "inspect-crate"],
+            ["crate-findings", "buy-discounted"],
+        ],
+    }
+    replay = _default_replay(event_log=event_logs[0], verify_hash=True)
+    assert replay.summary.status == "해시 검증 완료"
+    assert replay.summary.event_count == 1
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX terminal contract")

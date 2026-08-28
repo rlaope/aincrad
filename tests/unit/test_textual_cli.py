@@ -10,6 +10,7 @@ import pytest
 
 from aincrad.cli import (
     _AI_CHOICE,
+    _DIRECT_TEXT_CHOICE,
     _MOVE_CHOICE,
     _available_intents,
     _default_replay,
@@ -41,10 +42,13 @@ class FakeInteraction:
             "낯선 사람에게 먼저 말을 걸지만 위험은 신중하게 살핀다.",
             "긴장하면 손가락으로 탁자를 두드리고 약속을 중요하게 여긴다.",
         ),
+        input_values: tuple[str, ...] = (),
     ) -> None:
         self.answers = iter(answers)
         self.name = name
         self.identity_texts = iter(identity_texts)
+        self.input_values = iter(input_values)
+        self.input_errors: list[str] = []
         self.input_titles: list[str] = []
         self.menus: list[tuple[str, tuple[MenuOption[Any], ...]]] = []
         self.menu_contexts: list[tuple[str, ...]] = []
@@ -75,8 +79,16 @@ class FakeInteraction:
         validate: Callable[[str], str],
     ) -> str | None:
         self.input_titles.append(title)
-        raw = self.name if title == "주인공 이름" else next(self.identity_texts)
-        return validate(raw)
+        if title == "주인공 이름":
+            return validate(self.name)
+        if title in {"주인공의 성격", "주인공의 특징"}:
+            return validate(next(self.identity_texts))
+        while True:
+            raw = next(self.input_values)
+            try:
+                return validate(raw)
+            except ValueError as error:
+                self.input_errors.append(str(error))
 
     def show_text(self, title: str, body_lines: Sequence[str]) -> None:
         self.timeline.append(title)
@@ -302,8 +314,168 @@ def test_emberfall_facility_selection_opens_a_resident_grounded_submenu() -> Non
         "보급품 구입",
         "전리품 판매",
         "Orrin에게 말 걸기",
+        "금 간 화물 상자",
     ]
     assert "안내: Orrin Flint · 상점 관리인" in interaction.menu_contexts[1]
+
+
+def test_textual_orrin_incident_walk_uses_response_ids_without_story_or_scheduler() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    incident = world.locations["emberfall-shop"].interactions[0]
+    interaction = FakeInteraction(
+        "emberfall-shop",
+        incident,
+        "inspect-crate",
+        "buy-discounted",
+    )
+
+    selected = _prompt_for_intent_textual(
+        world,
+        "hero",
+        interaction=interaction,  # type: ignore[arg-type]
+    )
+
+    assert selected.controller == "user"
+    assert selected.reason_code == "user.selected"
+    assert selected.intent == ActionIntent(
+        "hero",
+        ActionKind.ENGAGE_INCIDENT,
+        target_location_id="emberfall-shop",
+        interaction=selected.intent.interaction,
+    )
+    assert selected.intent.interaction is not None
+    assert selected.intent.interaction.path == (
+        ("crate-opening", "inspect-crate"),
+        ("crate-findings", "buy-discounted"),
+    )
+    assert world.tick == 0
+    assert [title for title, _ in interaction.menus] == [
+        "유리별의 행동",
+        "잿불창고 교역소",
+        "금 간 화물 상자",
+        "금 간 화물 상자",
+    ]
+    assert "상자를 살펴본다" in [option.label for option in interaction.menus[2][1]]
+    assert "정중히 거절한다" in [option.label for option in interaction.menus[2][1]]
+    assert "금 간 등불을 짚어준다" in [option.label for option in interaction.menus[3][1]]
+    assert "할인가에 흠집 등불을 산다" in [option.label for option in interaction.menus[3][1]]
+
+
+def test_textual_orrin_alias_input_normalizes_to_canonical_response_id() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    incident = world.locations["emberfall-shop"].interactions[0]
+    interaction = FakeInteraction(
+        "emberfall-shop",
+        incident,
+        _DIRECT_TEXT_CHOICE,
+        _DIRECT_TEXT_CHOICE,
+        input_values=("  상자를   살펴본다 ", "할인가에 흠집 등불을 산다"),
+    )
+
+    selected = _prompt_for_intent_textual(
+        world,
+        "hero",
+        interaction=interaction,  # type: ignore[arg-type]
+    )
+
+    assert selected.reason_code == "user.text_alias"
+    assert selected.intent.interaction is not None
+    assert selected.intent.interaction.path == (
+        ("crate-opening", "inspect-crate"),
+        ("crate-findings", "buy-discounted"),
+    )
+    assert interaction.input_titles == ["직접 답하기", "직접 답하기"]
+
+
+def test_textual_escape_from_incident_walk_returns_to_hub_without_mutation() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    incident = world.locations["emberfall-shop"].interactions[0]
+    observed = next(
+        intent
+        for intent in _available_intents(world, "hero")
+        if intent.action is ActionKind.OBSERVE
+    )
+    interaction = FakeInteraction("emberfall-shop", incident, None, observed)
+
+    selected = _prompt_for_intent_textual(
+        world,
+        "hero",
+        interaction=interaction,  # type: ignore[arg-type]
+    )
+
+    assert selected.intent == observed
+    assert world.tick == 0
+    assert world.adventurers["hero"].location_id == "emberfall"
+    assert [title for title, _ in interaction.menus] == [
+        "유리별의 행동",
+        "잿불창고 교역소",
+        "금 간 화물 상자",
+        "유리별의 행동",
+    ]
+
+
+def test_textual_orrin_alias_terminal_schedules_one_hour_and_replays_without_raw_input(
+    tmp_path: Path,
+) -> None:
+    raw_sentinel = "절대-저장-금지-원문"
+    incident_world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    incident = incident_world.locations["emberfall-shop"].interactions[0]
+    interaction = FakeInteraction(
+        "emberfall-shop",
+        incident,
+        _DIRECT_TEXT_CHOICE,
+        _DIRECT_TEXT_CHOICE,
+        input_values=(
+            raw_sentinel,
+            "상자를 살펴본다",
+            raw_sentinel,
+            "할인가에 흠집 등불을 산다",
+        ),
+    )
+    event_log = tmp_path / "events.jsonl"
+    history_root = tmp_path / "history"
+
+    result = _default_run(
+        seed=7,
+        hours=1,
+        headless=False,
+        output=event_log,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+        hero_name="유리별",
+        identity_profile=CharacterIdentityProfile(
+            personality_description="차분히 살핀다.",
+            traits_description="약속을 지킨다.",
+        ),
+        history_root=history_root,
+        stdin=StringIO(),
+        stdout=StringIO(),
+        interaction=interaction,  # type: ignore[arg-type]
+    )
+
+    records = EventLog(event_log).verify()
+    proposal = records[1].event["proposals"][0]
+    assert result.summary.event_count == 1
+    assert proposal["action"] == ActionKind.ENGAGE_INCIDENT.value
+    assert proposal["reason_code"] == "user.text_alias"
+    assert proposal["interaction"] == {
+        "incident_id": "orrin-cracked-crate",
+        "path": [
+            ["crate-opening", "inspect-crate"],
+            ["crate-findings", "buy-discounted"],
+        ],
+    }
+    assert _default_replay(event_log=event_log, verify_hash=True).summary.status == "해시 검증 완료"
+    assert interaction.input_errors == [
+        "현재 질문의 응답 별칭과 정확히 일치하지 않습니다",
+        "현재 질문의 응답 별칭과 정확히 일치하지 않습니다",
+    ]
+    persisted = event_log.read_text(encoding="utf-8") + "".join(
+        path.read_text(encoding="utf-8")
+        for path in history_root.rglob("*")
+        if path.is_file()
+    )
+    assert raw_sentinel not in persisted
 
 
 def test_back_from_emberfall_facility_submenu_returns_to_hub_without_mutation() -> None:
@@ -384,7 +556,10 @@ def test_each_emberfall_facility_submenu_uses_its_full_contextual_catalog(
     facility_id: str,
 ) -> None:
     world = _starting_world(CharacterClass.WARRIOR, "유리별")
-    expected = tuple(action.label_ko for action in world.locations[facility_id].contextual_actions)
+    expected = (
+        tuple(action.label_ko for action in world.locations[facility_id].contextual_actions)
+        + tuple(incident.title_ko for incident in world.locations[facility_id].interactions)
+    )
     selected = ActionIntent(
         "hero",
         world.locations[facility_id].contextual_actions[0].kind,
@@ -683,8 +858,8 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     replayed = _default_replay(event_log=event_logs[0], verify_hash=True)
     assert replayed.summary.status == "해시 검증 완료"
     records = EventLog(event_logs[0]).verify()
-    assert records[0].event["schema_version"] == 5
-    assert records[0].event["rules_version"] == 4
+    assert records[0].event["schema_version"] == 6
+    assert records[0].event["rules_version"] == 5
     assert records[1].event["action_events"][0]["action"] == ActionKind.OBSERVE.value
 
 

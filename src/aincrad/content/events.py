@@ -168,9 +168,7 @@ def _validate_template_schema(template: LifeEventTemplate) -> None:
     elif event_type is LifeEventType.BOSS_ROOM_CLEAR:
         hp = triggers["boss_hp_at_most"]
         if not _is_int(hp) or hp > 0:
-            raise LifeEventCatalogError(
-                "boss trigger boss_hp_at_most must be an integer at most 0"
-            )
+            raise LifeEventCatalogError("boss trigger boss_hp_at_most must be an integer at most 0")
         if effects["boss_cleared"] is not True:
             raise LifeEventCatalogError("boss effect boss_cleared must be true")
     elif event_type is LifeEventType.NEXT_FLOOR_TRANSITION:
@@ -191,9 +189,7 @@ def _validate_world_references(
     boss_room = next(floor for floor in floors if floor["kind"] == "boss_room")
     completion = cast(Mapping[str, object], boss_room["completion"])
     boss_clear = next(
-        template
-        for template in templates
-        if template.event_type is LifeEventType.BOSS_ROOM_CLEAR
+        template for template in templates if template.event_type is LifeEventType.BOSS_ROOM_CLEAR
     )
     transition = next(
         template

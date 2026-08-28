@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from importlib.resources import as_file, files
 from pathlib import Path
@@ -37,6 +39,7 @@ class FacilityFixture(TypedDict):
     services: list[str]
     actions: list[ActionFixture]
     connections: list[str]
+    interactions: NotRequired[list[dict[str, object]]]
 
 
 class TownFixture(TypedDict):
@@ -262,6 +265,91 @@ def _unique_ids(items: Sequence[Mapping[str, object]], field: str) -> list[str]:
     return ids
 
 
+def _validate_interactions(
+    facilities: Sequence[Mapping[str, object]], npcs: Sequence[Mapping[str, object]]
+) -> None:
+    npc_locations = {str(npc["id"]): str(npc["location_id"]) for npc in npcs}
+    incident_ids: set[str] = set()
+    for facility in facilities:
+        raw_interactions = facility.get("interactions", [])
+        if not isinstance(raw_interactions, list):
+            raise FixtureSchemaError("facility interactions must be a list")
+        for incident in _objects(raw_interactions, "facility.interactions"):
+            if set(incident) != {"id", "npc_id", "title_ko", "entry_prompt_id", "prompts"}:
+                raise FixtureSchemaError("interaction keys must be exact")
+            incident_id = _text(incident["id"], "interaction.id")
+            if incident_id in incident_ids:
+                raise FixtureSchemaError("interaction ids must be world-unique")
+            incident_ids.add(incident_id)
+            npc_id = _text(incident["npc_id"], "interaction.npc_id")
+            if npc_locations.get(npc_id) != facility["id"]:
+                raise FixtureSchemaError("interaction NPC must be resident at its facility")
+            entry = _text(incident["entry_prompt_id"], "interaction.entry_prompt_id")
+            prompts = _objects(incident["prompts"], "interaction.prompts")
+            prompt_ids = {_text(prompt.get("id"), "interaction.prompt.id") for prompt in prompts}
+            if entry not in prompt_ids or not prompts or len(prompt_ids) != len(prompts):
+                raise FixtureSchemaError("interaction prompts must be unique and have an entry")
+            reachable = {entry}
+            outcomes: set[str] = set()
+            for prompt in prompts:
+                if set(prompt) != {"id", "text_ko", "responses"}:
+                    raise FixtureSchemaError("interaction prompt keys must be exact")
+                responses = _objects(prompt["responses"], "interaction.responses")
+                response_ids: set[str] = set()
+                aliases: set[str] = set()
+                for response in responses:
+                    if set(response) - {
+                        "id",
+                        "label_ko",
+                        "aliases_ko",
+                        "next_prompt_id",
+                        "terminal",
+                    }:
+                        raise FixtureSchemaError("interaction response has unknown keys")
+                    response_id = _text(response.get("id"), "interaction.response.id")
+                    if response_id in response_ids:
+                        raise FixtureSchemaError("interaction response ids must be unique")
+                    response_ids.add(response_id)
+                    _text(response.get("label_ko"), "interaction.response.label_ko")
+                    raw_aliases = response.get("aliases_ko", [])
+                    if not isinstance(raw_aliases, list):
+                        raise FixtureSchemaError("interaction aliases must be a list")
+                    for alias in raw_aliases:
+                        alias = _text(alias, "interaction alias")
+                        normalized = " ".join(unicodedata.normalize("NFC", alias).strip().split())
+                        if (
+                            len(normalized) > 24
+                            or any(ord(char) < 32 or ord(char) == 127 for char in normalized)
+                            or not re.search("[가-힣]", normalized)
+                            or normalized in aliases
+                        ):
+                            raise FixtureSchemaError("interaction alias is invalid or ambiguous")
+                        aliases.add(normalized)
+                    has_next = "next_prompt_id" in response
+                    has_terminal = "terminal" in response
+                    if has_next == has_terminal:
+                        raise FixtureSchemaError(
+                            "response requires exactly one next prompt or terminal"
+                        )
+                    if has_next:
+                        next_id = _text(response["next_prompt_id"], "interaction.next_prompt_id")
+                        if next_id not in prompt_ids:
+                            raise FixtureSchemaError("interaction edge references unknown prompt")
+                        reachable.add(next_id)
+                    else:
+                        terminal = _object(response["terminal"], "interaction.terminal")
+                        if set(terminal) != {"outcome_code", "gold_delta", "resource_delta"}:
+                            raise FixtureSchemaError("interaction terminal keys must be exact")
+                        outcome = _text(terminal["outcome_code"], "interaction.outcome_code")
+                        if outcome in outcomes:
+                            raise FixtureSchemaError("interaction outcomes must be unique")
+                        outcomes.add(outcome)
+                        _integer(terminal["gold_delta"], "interaction.gold_delta")
+                        _integer(terminal["resource_delta"], "interaction.resource_delta")
+            if reachable != prompt_ids or not outcomes:
+                raise FixtureSchemaError("interaction graph must be reachable and terminal")
+
+
 def validate_world_fixture(
     world: object,
     *,
@@ -351,6 +439,7 @@ def validate_world_fixture(
         if not isinstance(rules, Mapping) or not rules:
             raise FixtureSchemaError(f"NPC {npc_id} rules must be a non-empty object")
 
+    _validate_interactions(facilities, npcs)
     return cast(WorldFixture, root)
 
 
@@ -446,6 +535,7 @@ _PACKAGED_WORLD_RESOURCES: Mapping[str, str] = {
     "current": "glassfrontier_world.json",
     "rules-v2": "glassfrontier_world_rules_v2.json",
     "rules-v3": "glassfrontier_world_rules_v3.json",
+    "rules-v4": "glassfrontier_world_rules_v4.json",
 }
 
 
@@ -464,14 +554,14 @@ def load_packaged_world_fixture(*, revision: str = "current") -> LoadedWorldFixt
                 _rules_v2_expected_action_kinds
                 if revision == "rules-v2"
                 else _rules_v3_expected_action_kinds
-                if revision == "rules-v3"
+                if revision in {"rules-v3", "rules-v4"}
                 else None
             ),
             expected_facility_services=(
                 _RULES_V2_FACILITY_SERVICES
                 if revision == "rules-v2"
                 else _RULES_V3_FACILITY_SERVICES
-                if revision == "rules-v3"
+                if revision in {"rules-v3", "rules-v4"}
                 else None
             ),
         )

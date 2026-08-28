@@ -7,9 +7,11 @@ import os
 import shutil
 import sys
 import tempfile
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TextIO
 
@@ -29,6 +31,7 @@ from aincrad.commentary import (
 )
 from aincrad.content import (
     available_action_intents,
+    available_facility_interactions,
     contextual_action_for_intent,
     resident_npc_for_location,
 )
@@ -41,6 +44,9 @@ from aincrad.domain import (
     Adventurer,
     CharacterClass,
     DomainEvent,
+    FacilityInteraction,
+    InteractionPrompt,
+    InteractionSelection,
     PartyState,
     Stats,
     WorldState,
@@ -129,14 +135,15 @@ Runner = Callable[..., SimulationResult]
 ReplayRunner = Callable[..., SimulationResult]
 CommentaryProvider = Callable[[MovementCommentaryRequest], MovementCommentaryResult]
 StoryProvider = Callable[[TurnStoryRequest], TurnStoryResult]
-_CURRENT_SCHEMA_VERSION = 5
-_CURRENT_RULES_VERSION = 4
-_VERSIONED_RULES_VERSIONS = {2: 1, 3: 2, 4: 3, 5: 4}
+_CURRENT_SCHEMA_VERSION = 6
+_CURRENT_RULES_VERSION = 5
+_VERSIONED_RULES_VERSIONS = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
 _VERSIONED_CONTENT_REVISIONS = {
     2: "rules-v2",
     3: "rules-v2",
     4: "rules-v3",
-    5: "current",
+    5: "rules-v4",
+    6: "current",
 }
 
 
@@ -203,6 +210,7 @@ _OBJECTIVE_RELATIONSHIP_DELTA = 5
 _AI_CHOICE = object()
 _MOVE_CHOICE = object()
 _OTHER_DESTINATIONS = object()
+_DIRECT_TEXT_CHOICE = object()
 _ACTION_LABELS = {
     "move": "이동",
     "rest": "휴식",
@@ -224,9 +232,7 @@ _CHARACTER_OPTIONS = (
     (CharacterClass.MAGE, "마법사", "세이블 퀼", Stats(14, 14, 20, 20)),
     (CharacterClass.TANK, "탱커", "브란 실드", Stats(30, 30, 6, 6)),
 )
-_CLASS_LABELS = {
-    character_class: label for character_class, label, _, _ in _CHARACTER_OPTIONS
-}
+_CLASS_LABELS = {character_class: label for character_class, label, _, _ in _CHARACTER_OPTIONS}
 _DEFAULT_IDENTITY_PROFILE = CharacterIdentityProfile(
     personality_description="낯선 것을 호기심 있게 살피되 위험 앞에서는 신중하게 판단한다.",
     traits_description="동료의 의견을 존중하고 작은 단서도 놓치지 않으려 한다.",
@@ -275,10 +281,7 @@ def _prompt_identity_textual(interaction: TextualInteraction) -> CharacterIdenti
 def _prompt_for_character(*, stdin: TextIO, stdout: TextIO) -> CharacterClass:
     stdout.write("\n══ 캐릭터 선택 ══\n")
     for index, (_, label, name, stats) in enumerate(_CHARACTER_OPTIONS, start=1):
-        stdout.write(
-            f"{index}. {label} · {name} "
-            f"(HP {stats.max_hp}, MP {stats.max_mp})\n"
-        )
+        stdout.write(f"{index}. {label} · {name} (HP {stats.max_hp}, MP {stats.max_mp})\n")
     while True:
         stdout.write("선택> ")
         stdout.flush()
@@ -317,9 +320,7 @@ def _show_text_screen(
         wrapped = tuple(
             wrapped_line
             for source_line in body_lines
-            for wrapped_line in wrap_display(
-                sanitize_terminal_text(source_line), width - 4
-            )
+            for wrapped_line in wrap_display(sanitize_terminal_text(source_line), width - 4)
         )
         scroll_hint = "↑↓ / W S 스크롤 · Enter / Esc 뒤로"
         viewport_size = max(
@@ -335,11 +336,7 @@ def _show_text_screen(
         offset = min(offset, max_offset)
         visible = wrapped[offset : offset + viewport_size]
         scrollable = len(wrapped) > viewport_size
-        hint = (
-            scroll_hint
-            if scrollable
-            else "Enter 또는 Esc로 뒤로"
-        )
+        hint = scroll_hint if scrollable else "Enter 또는 Esc로 뒤로"
         viewport_size = max(
             1,
             text_screen_body_capacity(
@@ -696,11 +693,142 @@ def _prompt_for_intent(
         if selected_index == ai_index:
             selected = _choose_ai_intent(world, actor_id)
             stdout.write(
-                f"AI 선택: {_intent_label(selected, world)} "
-                "(reason_code=world_state_rule)\n"
+                f"AI 선택: {_intent_label(selected, world)} (reason_code=world_state_rule)\n"
             )
             return selected
         stdout.write(f"1~{ai_index} 사이의 번호를 입력하세요.\n")
+
+
+def _normalize_interaction_alias(raw: str) -> str:
+    normalized = " ".join(unicodedata.normalize("NFC", raw).strip().split())
+    if (
+        not normalized
+        or len(normalized) > 40
+        or any(unicodedata.category(character).startswith("C") for character in normalized)
+    ):
+        raise ValueError("한글 별칭은 제어 문자 없이 40자 이하여야 합니다")
+    return normalized
+
+
+def _response_id_for_alias(prompt: InteractionPrompt, raw: str) -> str:
+    normalized = _normalize_interaction_alias(raw)
+    matches = tuple(
+        response.id
+        for response in prompt.responses
+        if normalized
+        in tuple(_normalize_interaction_alias(alias) for alias in response.aliases_ko)
+    )
+    if len(matches) != 1:
+        raise ValueError("현재 질문의 응답 별칭과 정확히 일치하지 않습니다")
+    return matches[0]
+
+
+def _prompt_for_interaction_textual(
+    world: WorldState,
+    actor_id: str,
+    facility_id: str,
+    incident: FacilityInteraction,
+    *,
+    interaction: TextualInteraction,
+) -> ControlledAction | None:
+    prompts = {prompt.id: prompt for prompt in incident.prompts}
+    prompt_id = incident.entry_prompt_id
+    path: list[tuple[str, str]] = []
+    used_text_alias = False
+    while True:
+        prompt = prompts[prompt_id]
+        selected = interaction.choose(
+            incident.title_ko,
+            tuple(
+                MenuOption[object](response.label_ko, "선택", response.id)
+                for response in prompt.responses
+            )
+            + (
+                MenuOption[object](
+                    "직접 답하기", "현재 질문의 한글 별칭을 정확히 입력합니다", _DIRECT_TEXT_CHOICE
+                ),
+            ),
+            subtitle=prompt.text_ko,
+            allow_back=True,
+        )
+        if selected is None:
+            return None
+        if selected is _DIRECT_TEXT_CHOICE:
+            response_id = interaction.input_text(
+                "직접 답하기",
+                subtitle="현재 질문에 표시된 한글 별칭만 정확히 입력하세요",
+                validate=partial(_response_id_for_alias, prompt),
+            )
+            if response_id is None:
+                return None
+            used_text_alias = True
+        else:
+            if not isinstance(selected, str):
+                raise ValueError("interaction response selection must be a response id")
+            response_id = selected
+        if not isinstance(response_id, str):
+            raise ValueError("interaction response selection must be a response id")
+        response = next((item for item in prompt.responses if item.id == response_id), None)
+        if response is None:
+            raise ValueError("interaction response selection is not available")
+        path.append((prompt.id, response.id))
+        if response.terminal is not None:
+            return ControlledAction(
+                ActionIntent(
+                    actor_id,
+                    ActionKind.ENGAGE_INCIDENT,
+                    target_location_id=facility_id,
+                    interaction=InteractionSelection(incident.id, tuple(path)),
+                ),
+                "user",
+                "user.text_alias" if used_text_alias else "user.selected",
+            )
+        assert response.next_prompt_id is not None
+        prompt_id = response.next_prompt_id
+
+
+def _prompt_for_interaction_menu(
+    actor_id: str,
+    facility_id: str,
+    incident: FacilityInteraction,
+    *,
+    key_reader: KeyReader,
+    stdout: TextIO,
+    frame_writer: Callable[[str], None] | None,
+) -> ControlledAction | None:
+    prompts = {prompt.id: prompt for prompt in incident.prompts}
+    prompt_id = incident.entry_prompt_id
+    path: list[tuple[str, str]] = []
+    while True:
+        prompt = prompts[prompt_id]
+        response_id = _select_menu(
+            incident.title_ko,
+            tuple(MenuChoice(response.label_ko) for response in prompt.responses),
+            tuple(response.id for response in prompt.responses),
+            key_reader=key_reader,
+            stdout=stdout,
+            allow_back=True,
+            frame_writer=frame_writer,
+            subtitle=prompt.text_ko,
+        )
+        if response_id is None:
+            return None
+        assert isinstance(response_id, str)
+        response = next(item for item in prompt.responses if item.id == response_id)
+        path.append((prompt.id, response.id))
+        if response.terminal is not None:
+            return ControlledAction(
+                ActionIntent(
+                    actor_id,
+                    ActionKind.ENGAGE_INCIDENT,
+                    target_location_id=facility_id,
+                    interaction=InteractionSelection(incident.id, tuple(path)),
+                ),
+                "user",
+                "user.selected",
+            )
+        assert response.next_prompt_id is not None
+        prompt_id = response.next_prompt_id
 
 
 def _prompt_for_facility_intent_menu(
@@ -712,7 +840,7 @@ def _prompt_for_facility_intent_menu(
     key_reader: KeyReader,
     stdout: TextIO,
     frame_writer: Callable[[str], None] | None,
-) -> ActionIntent | None:
+) -> ControlledAction | None:
     """Choose a facility action before the scheduler sees an intent."""
 
     adventurer = world.adventurers[actor_id]
@@ -737,26 +865,43 @@ def _prompt_for_facility_intent_menu(
         resident_role_ko=resident.role_ko if resident is not None else None,
         width=_screen_width(),
     )
+    facility_interactions = available_facility_interactions(world, actor_id, facility_id)
     selected = _select_menu(
         location_name_ko(facility_id),
         tuple(
             MenuChoice(_intent_label(intent, world), _intent_description(intent, world))
             for intent in facility_intents
+        )
+        + tuple(
+            MenuChoice(
+                incident.title_ko,
+                f"{resident.display_name if resident is not None else '주민'}의 부탁을 듣습니다",
+            )
+            for incident in facility_interactions
         ),
-        facility_intents,
+        (*facility_intents, *facility_interactions),
         key_reader=key_reader,
         stdout=stdout,
         allow_back=True,
         frame_writer=frame_writer,
-        subtitle="이 시설에서 보낼 다음 한 시간의 행동을 고르세요",
+        subtitle="이 시설에서 보낼 다음 한 시간의 행동이나 부탁을 고르세요",
         context=context,
         width=_screen_width(),
     )
     if selected is None:
         return None
+    if isinstance(selected, FacilityInteraction):
+        return _prompt_for_interaction_menu(
+            actor_id,
+            facility_id,
+            selected,
+            key_reader=key_reader,
+            stdout=stdout,
+            frame_writer=frame_writer,
+        )
     assert isinstance(selected, ActionIntent)
     assert selected.target_location_id == facility_id
-    return selected
+    return ControlledAction(selected, "user", "user.selected")
 
 
 def _prompt_for_movement_menu(
@@ -797,14 +942,14 @@ def _prompt_for_movement_menu(
     return ControlledAction(selected, "user", "user.selected")
 
 
-def _prompt_for_intent_menu(
+def _prompt_for_intent_menu_once(
     world: WorldState,
     actor_id: str,
     *,
     key_reader: KeyReader,
     stdout: TextIO,
     frame_writer: Callable[[str], None] | None = None,
-) -> ControlledAction:
+) -> ControlledAction | None:
     allowed = _available_intents(world, actor_id)
     move_intents = tuple(intent for intent in allowed if intent.action is ActionKind.MOVE)
     frame_width = _screen_width()
@@ -844,34 +989,33 @@ def _prompt_for_intent_menu(
         if any(intent.target_location_id == facility_id for intent in allowed)
     )
     facility_actions = {
-        facility_id: tuple(
-            intent for intent in allowed if intent.target_location_id == facility_id
-        )
+        facility_id: tuple(intent for intent in allowed if intent.target_location_id == facility_id)
         for facility_id in facility_ids
     }
     local_intents = tuple(intent for intent in allowed if intent.target_location_id is None)
-    choices = tuple(
-        MenuChoice(
-            f"{facility_labels[facility_id]} · {location_name_ko(facility_id)}",
-            location_description_ko(facility_id),
+    choices = (
+        tuple(
+            MenuChoice(
+                f"{facility_labels[facility_id]} · {location_name_ko(facility_id)}",
+                location_description_ko(facility_id),
+            )
+            for facility_id in facility_ids
         )
-        for facility_id in facility_ids
-    ) + (
-        (
-            MenuChoice("마을 밖으로 이동", "마을 경계 밖으로 이어진 길을 살펴봅니다"),
+        + (
+            (MenuChoice("마을 밖으로 이동", "마을 경계 밖으로 이어진 길을 살펴봅니다"),)
+            if facility_ids
+            else (MenuChoice("이동하기", f"연결된 길 {len(move_intents)}곳을 살펴봅니다"),)
         )
-        if facility_ids
-        else (
-            MenuChoice("이동하기", f"연결된 길 {len(move_intents)}곳을 살펴봅니다"),
+        + tuple(
+            MenuChoice(_intent_label(intent, world), _intent_description(intent, world))
+            for intent in local_intents
         )
-    ) + tuple(
-        MenuChoice(_intent_label(intent, world), _intent_description(intent, world))
-        for intent in local_intents
-    ) + (
-        MenuChoice(
-            "AI 판단에 맡기기",
-            "현재 HP·MP·위치·자원·갈 수 있는 길을 비교해 행동 선택",
-        ),
+        + (
+            MenuChoice(
+                "AI 판단에 맡기기",
+                "현재 HP·MP·위치·자원·갈 수 있는 길을 비교해 행동 선택",
+            ),
+        )
     )
     choice_values: tuple[object, ...] = (
         *facility_ids,
@@ -907,7 +1051,7 @@ def _prompt_for_intent_menu(
             move_intents=move_intents,
         )
     if isinstance(selected, str) and selected in facility_actions:
-        facility_intent = _prompt_for_facility_intent_menu(
+        facility_action = _prompt_for_facility_intent_menu(
             world,
             actor_id,
             selected,
@@ -916,17 +1060,31 @@ def _prompt_for_intent_menu(
             stdout=stdout,
             frame_writer=frame_writer,
         )
-        if facility_intent is None:
-            return _prompt_for_intent_menu(
-                world,
-                actor_id,
-                key_reader=key_reader,
-                stdout=stdout,
-                frame_writer=frame_writer,
-            )
-        return ControlledAction(facility_intent, "user", "user.selected")
+        if facility_action is None:
+            return None
+        return facility_action
     assert isinstance(selected, ActionIntent)
     return ControlledAction(selected, "user", "user.selected")
+
+
+def _prompt_for_intent_menu(
+    world: WorldState,
+    actor_id: str,
+    *,
+    key_reader: KeyReader,
+    stdout: TextIO,
+    frame_writer: Callable[[str], None] | None = None,
+) -> ControlledAction:
+    while True:
+        selected = _prompt_for_intent_menu_once(
+            world,
+            actor_id,
+            key_reader=key_reader,
+            stdout=stdout,
+            frame_writer=frame_writer,
+        )
+        if selected is not None:
+            return selected
 
 
 def _prompt_for_facility_intent_textual(
@@ -936,8 +1094,8 @@ def _prompt_for_facility_intent_textual(
     facility_intents: tuple[ActionIntent, ...],
     *,
     interaction: TextualInteraction,
-) -> ActionIntent | None:
-    """Choose one facility service without mutating or scheduling the world."""
+) -> ControlledAction | None:
+    """Choose a facility service or ephemeral incident before scheduling a tick."""
 
     adventurer = world.adventurers[actor_id]
     resident = resident_npc_for_location(facility_id)
@@ -961,6 +1119,7 @@ def _prompt_for_facility_intent_textual(
         resident_role_ko=resident.role_ko if resident is not None else None,
         width=80,
     )
+    facility_interactions = available_facility_interactions(world, actor_id, facility_id)
     selected = interaction.choose(
         location_name_ko(facility_id),
         tuple(
@@ -968,19 +1127,35 @@ def _prompt_for_facility_intent_textual(
                 _intent_label(intent, world), _intent_description(intent, world), intent
             )
             for intent in facility_intents
+        )
+        + tuple(
+            MenuOption[object](
+                incident.title_ko,
+                f"{resident.display_name if resident is not None else '주민'}의 부탁을 듣습니다",
+                incident,
+            )
+            for incident in facility_interactions
         ),
-        subtitle="이 시설에서 보낼 다음 한 시간의 행동을 고르세요",
+        subtitle="이 시설에서 보낼 다음 한 시간의 행동이나 부탁을 고르세요",
         context=context,
         allow_back=True,
     )
     if selected is None:
         return None
+    if isinstance(selected, FacilityInteraction):
+        return _prompt_for_interaction_textual(
+            world,
+            actor_id,
+            facility_id,
+            selected,
+            interaction=interaction,
+        )
     assert isinstance(selected, ActionIntent)
     assert selected.target_location_id == facility_id
-    return selected
+    return ControlledAction(selected, "user", "user.selected")
 
 
-def _prompt_for_intent_textual(
+def _prompt_for_intent_textual_once(
     world: WorldState,
     actor_id: str,
     *,
@@ -989,7 +1164,7 @@ def _prompt_for_intent_textual(
     commentary_provider: Callable[
         [MovementCommentaryRequest], MovementCommentaryResult
     ] = deterministic_commentary,
-) -> ControlledAction:
+) -> ControlledAction | None:
     allowed = _available_intents(world, actor_id)
     move_intents = tuple(intent for intent in allowed if intent.action is ActionKind.MOVE)
     local_intents = tuple(
@@ -1033,9 +1208,7 @@ def _prompt_for_intent_textual(
         if any(intent.target_location_id == facility_id for intent in allowed)
     )
     facility_actions = {
-        facility_id: tuple(
-            intent for intent in allowed if intent.target_location_id == facility_id
-        )
+        facility_id: tuple(intent for intent in allowed if intent.target_location_id == facility_id)
         for facility_id in facility_ids
     }
     route_intents = move_intents
@@ -1062,19 +1235,23 @@ def _prompt_for_intent_textual(
                 _MOVE_CHOICE,
             ),
         )
-    options: tuple[MenuOption[object], ...] = movement_options + tuple(
-        MenuOption[object](
-            _intent_label(intent, world),
-            _intent_description(intent, world),
-            intent,
+    options: tuple[MenuOption[object], ...] = (
+        movement_options
+        + tuple(
+            MenuOption[object](
+                _intent_label(intent, world),
+                _intent_description(intent, world),
+                intent,
+            )
+            for intent in local_intents
         )
-        for intent in local_intents
-    ) + (
-        MenuOption[object](
-            "AI 판단에 맡기기",
-            "현재 HP·MP·위치·자원·갈 수 있는 길을 비교해 행동 선택",
-            _AI_CHOICE,
-        ),
+        + (
+            MenuOption[object](
+                "AI 판단에 맡기기",
+                "현재 HP·MP·위치·자원·갈 수 있는 길을 비교해 행동 선택",
+                _AI_CHOICE,
+            ),
+        )
     )
     selected = interaction.choose(
         f"{adventurer.name}의 행동",
@@ -1098,24 +1275,40 @@ def _prompt_for_intent_textual(
             move_intents=route_intents,
         )
     if isinstance(selected, str) and selected in facility_actions:
-        facility_intent = _prompt_for_facility_intent_textual(
+        facility_action = _prompt_for_facility_intent_textual(
             world,
             actor_id,
             selected,
             facility_actions[selected],
             interaction=interaction,
         )
-        if facility_intent is None:
-            return _prompt_for_intent_textual(
-                world,
-                actor_id,
-                interaction=interaction,
-                identity_profile=identity_profile,
-                commentary_provider=commentary_provider,
-            )
-        return ControlledAction(facility_intent, "user", "user.selected")
+        if facility_action is None:
+            return None
+        return facility_action
     assert isinstance(selected, ActionIntent)
     return ControlledAction(selected, "user", "user.selected")
+
+
+def _prompt_for_intent_textual(
+    world: WorldState,
+    actor_id: str,
+    *,
+    interaction: TextualInteraction,
+    identity_profile: CharacterIdentityProfile = _DEFAULT_IDENTITY_PROFILE,
+    commentary_provider: Callable[
+        [MovementCommentaryRequest], MovementCommentaryResult
+    ] = deterministic_commentary,
+) -> ControlledAction:
+    while True:
+        selected = _prompt_for_intent_textual_once(
+            world,
+            actor_id,
+            interaction=interaction,
+            identity_profile=identity_profile,
+            commentary_provider=commentary_provider,
+        )
+        if selected is not None:
+            return selected
 
 
 def _apply_objective_relationship(story: StoryState, objective_complete: bool) -> StoryState:
@@ -1130,9 +1323,7 @@ def _apply_objective_relationship(story: StoryState, objective_complete: bool) -
         (source_id, target_id): relationship_score
         for source_id, target_id, relationship_score in story.relationship_scores
     }
-    relationships[(HERO_ID, "rhea-vale")] = min(
-        100, score + _OBJECTIVE_RELATIONSHIP_DELTA
-    )
+    relationships[(HERO_ID, "rhea-vale")] = min(100, score + _OBJECTIVE_RELATIONSHIP_DELTA)
     return StoryState(
         quest_states=story.quest_states,
         relationship_scores=relationships,
@@ -1168,9 +1359,7 @@ def _run_hours(
         if party is None:
             raise ValueError("world has no runtime party")
         actor_ids = tuple(
-            actor_id
-            for actor_id in party.member_ids
-            if world.adventurers[actor_id].alive
+            actor_id for actor_id in party.member_ids if world.adventurers[actor_id].alive
         )
         controlled: list[ControlledAction] = []
         for actor_id in actor_ids:
@@ -1195,9 +1384,7 @@ def _run_hours(
         hero = action_world.adventurers[party.selected_hero_id]
         available_locations = (hero.location_id,)
         available_quests = (
-            ("echoes-at-emberfall",)
-            if hero.location_id == "emberfall-quest-hall"
-            else ()
+            ("echoes-at-emberfall",) if hero.location_id == "emberfall-quest-hall" else ()
         )
         # Observable objective rule: a successful hero GATHER action while the
         # resulting location is Mossreach completes echoes-at-emberfall.
@@ -1208,17 +1395,13 @@ def _run_hours(
             and action_world.adventurers[event.adventurer_id].location_id == "mossreach"
             for event in hourly.events
         )
-        completed_objectives = (
-            ("echoes-at-emberfall",) if objective_complete else ()
-        )
+        completed_objectives = ("echoes-at-emberfall",) if objective_complete else ()
         story = _apply_objective_relationship(story, objective_complete)
         recent = tuple(
             StoryRecentEventView(
                 f"action-{event.tick}-{event.adventurer_id}",
                 event.tick,
-                "action_succeeded"
-                if isinstance(event, ActionSucceeded)
-                else "action_rejected",
+                "action_succeeded" if isinstance(event, ActionSucceeded) else "action_rejected",
                 (
                     (
                         "action",
@@ -1262,9 +1445,7 @@ def _run_hours(
                 (str(story.relationship_score(HERO_ID, "rhea-vale")),),
             ),
         )
-        trace = TickTrace(
-            tuple(controlled), hourly.events, selected_story, resolution, facts
-        )
+        trace = TickTrace(tuple(controlled), hourly.events, selected_story, resolution, facts)
         traces.append(trace)
         if trace_observer is not None:
             trace_observer(completed_hours, trace)
@@ -1315,9 +1496,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(character_class.value for character_class in CharacterClass),
         help="시작 직업: warrior, archer, mage, tank",
     )
-    simulate.add_argument(
-        "--name", "--hero-name", dest="hero_name", help="주인공 표시 이름"
-    )
+    simulate.add_argument("--name", "--hero-name", dest="hero_name", help="주인공 표시 이름")
     simulate.add_argument("--output", type=Path)
     simulate.add_argument("--history-root", type=Path)
     simulate.add_argument(
@@ -1335,7 +1514,6 @@ def build_parser() -> argparse.ArgumentParser:
     history_show.add_argument("run_number", type=_positive_int)
     history_show.add_argument("--history-root", type=Path, required=True)
     return parser
-
 
 
 def _event_message(event: DomainEvent, world: WorldState) -> str:
@@ -1399,9 +1577,7 @@ def _event_view(event: DomainEvent, world: WorldState) -> EventView:
     )
 
 
-def _continue_context(
-    world: WorldState, trace: TickTrace, *, width: int
-) -> tuple[str, ...]:
+def _continue_context(world: WorldState, trace: TickTrace, *, width: int) -> tuple[str, ...]:
     party = world.party
     if party is None:
         raise ValueError("world has no runtime party")
@@ -1560,6 +1736,20 @@ def _world_digest(world: WorldState) -> str:
     return hashlib.sha256(canonical_json(world).encode("utf-8")).hexdigest()
 
 
+def _pre_v6_world_digest(world: WorldState) -> str:
+    """Hash legacy worlds through the Location shape committed before incidents."""
+
+    payload = to_json_value(world)
+    locations = payload.get("locations")
+    if not isinstance(locations, dict):
+        raise ValueError("legacy world locations must be an object")
+    for raw_location in locations.values():
+        if not isinstance(raw_location, dict):
+            raise ValueError("legacy location must be an object")
+        raw_location.pop("interactions", None)
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
 def _legacy_v2_world(world: WorldState) -> WorldState:
     """Remove post-v2 location affordances before replaying rules version 1."""
 
@@ -1596,6 +1786,7 @@ def _legacy_v2_world_digest(world: WorldState) -> str:
         raw_location.pop("description", None)
         raw_location.pop("services", None)
         raw_location.pop("contextual_actions", None)
+        raw_location.pop("interactions", None)
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -1657,9 +1848,7 @@ def _default_run(
             if selected_class is None:
                 raise EOFError("직업 선택이 취소되었습니다")
         else:
-            selected_class = _prompt_for_character(
-                stdin=input_stream, stdout=output_stream
-            )
+            selected_class = _prompt_for_character(stdin=input_stream, stdout=output_stream)
     if hero_name is None:
         if headless:
             hero_name = next(
@@ -1766,9 +1955,7 @@ def _default_run(
 
     if archive is not None:
 
-        def record_hour(
-            completed_hours: int, hourly: EngineSimulationResult
-        ) -> None:
+        def record_hour(completed_hours: int, hourly: EngineSimulationResult) -> None:
             current_run_number = ensure_history_run()
             trace = hourly_traces[completed_hours]
             template = next(
@@ -1872,9 +2059,7 @@ def _default_run(
                     frame_writer=frame_writer,
                 )
             return ControlledAction(
-                _prompt_for_intent(
-                    world, actor_id, stdin=input_stream, stdout=output_stream
-                ),
+                _prompt_for_intent(world, actor_id, stdin=input_stream, stdout=output_stream),
                 "user",
                 "user.selected",
             )
@@ -1903,9 +2088,7 @@ def _default_run(
 
         observers.append(render_hour)
 
-    def observe_hour(
-        completed_hours: int, hourly: EngineSimulationResult
-    ) -> None:
+    def observe_hour(completed_hours: int, hourly: EngineSimulationResult) -> None:
         for observer in observers:
             observer(completed_hours, hourly)
 
@@ -1915,9 +2098,7 @@ def _default_run(
         canonical_story = render_turn_story(
             world,
             trace.action_events,
-            controllers={
-                proposal.actor_id: proposal.controller for proposal in trace.proposals
-            },
+            controllers={proposal.actor_id: proposal.controller for proposal in trace.proposals},
             story_event_text=_story_event_text(trace),
         )
         if interaction is not None and not headless:
@@ -2030,14 +2211,22 @@ def _default_run(
                                 else str(proposal.intent.action),
                                 "target_location_id": proposal.intent.target_location_id,
                                 "quantity": proposal.intent.quantity,
+                                "interaction": (
+                                    None
+                                    if proposal.intent.interaction is None
+                                    else {
+                                        "incident_id": proposal.intent.interaction.incident_id,
+                                        "path": [
+                                            list(step) for step in proposal.intent.interaction.path
+                                        ],
+                                    }
+                                ),
                                 "controller": proposal.controller,
                                 "reason_code": proposal.reason_code,
                             }
                             for proposal in trace.proposals
                         ],
-                        "action_events": [
-                            to_json_value(event) for event in trace.action_events
-                        ],
+                        "action_events": [to_json_value(event) for event in trace.action_events],
                         "story_facts": {key: list(values) for key, values in trace.facts},
                         "story_intent": to_json_value(trace.story_intent),
                         "story_resolution": {
@@ -2142,9 +2331,7 @@ def _positive_detail(record: StoredEvent, details: dict[str, str], key: str) -> 
 def _reduce_stored_event(
     world: WorldState, record: StoredEvent, *, advance_tick: bool = True
 ) -> WorldState:
-    tick, next_tick, actor, action, target, quantity, details, reason = _event_fields(
-        record
-    )
+    tick, next_tick, actor, action, target, quantity, details, reason = _event_fields(record)
     if world.tick != tick:
         raise ValueError(f"event {record.seq} does not follow world tick {world.tick}")
     gather_yield = (
@@ -2163,9 +2350,7 @@ def _reduce_stored_event(
     return replace(next_world, tick=next_tick) if advance_tick else next_world
 
 
-def _replay_action(
-    world: WorldState, record: StoredEvent
-) -> tuple[WorldState, DomainEvent]:
+def _replay_action(world: WorldState, record: StoredEvent) -> tuple[WorldState, DomainEvent]:
     tick, _, actor, action, target, quantity, details, reason = _event_fields(record)
     if world.tick != tick:
         raise ValueError(f"event {record.seq} does not follow world tick {world.tick}")
@@ -2222,7 +2407,7 @@ def _strict_replay_versioned(
         "final_tick",
         "final_world_digest",
     }
-    if expected_version in {3, 4, 5}:
+    if expected_version in {3, 4, 5, 6}:
         init_keys.add("identity")
     if not isinstance(init, dict) or set(init) != init_keys:
         raise ValueError("invalid versioned run initialization")
@@ -2244,7 +2429,7 @@ def _strict_replay_versioned(
         or len(init["final_world_digest"]) != 64
     ):
         raise ValueError("unsupported versioned run initialization")
-    if expected_version in {3, 4, 5}:
+    if expected_version in {3, 4, 5, 6}:
         identity = init["identity"]
         if not isinstance(identity, dict):
             raise ValueError("versioned run identity must be an object")
@@ -2323,21 +2508,58 @@ def _strict_replay_versioned(
         if party_before is None:
             raise ValueError("strict replay world has no party")
         for raw in raw_proposals:
-            if not isinstance(raw, dict) or set(raw) != {
+            proposal_keys = {
                 "actor_id",
                 "action",
                 "target_location_id",
                 "quantity",
                 "controller",
                 "reason_code",
-            }:
+            }
+            if expected_version == 6:
+                proposal_keys.add("interaction")
+            if not isinstance(raw, dict) or set(raw) != proposal_keys:
                 raise ValueError(f"record {record.seq} has an invalid proposal")
+            if type(raw["quantity"]) is not int:
+                raise ValueError(f"record {record.seq} has an invalid proposal quantity")
+            if (
+                not isinstance(raw["actor_id"], str)
+                or not isinstance(raw["action"], str)
+                or raw["target_location_id"] is not None
+                and not isinstance(raw["target_location_id"], str)
+                or not isinstance(raw["controller"], str)
+                or not isinstance(raw["reason_code"], str)
+            ):
+                raise ValueError(f"record {record.seq} has invalid proposal fields")
+            interaction = None
+            if expected_version == 6:
+                raw_interaction = raw["interaction"]
+                if raw_interaction is not None:
+                    if (
+                        not isinstance(raw_interaction, dict)
+                        or set(raw_interaction) != {"incident_id", "path"}
+                        or not isinstance(raw_interaction["incident_id"], str)
+                    ):
+                        raise ValueError(f"record {record.seq} has an invalid interaction")
+                    raw_path = raw_interaction["path"]
+                    if not isinstance(raw_path, list) or any(
+                        not isinstance(step, list)
+                        or len(step) != 2
+                        or not all(isinstance(value, str) for value in step)
+                        for step in raw_path
+                    ):
+                        raise ValueError(f"record {record.seq} has an invalid interaction path")
+                    interaction = InteractionSelection(
+                        raw_interaction["incident_id"],
+                        tuple((step[0], step[1]) for step in raw_path),
+                    )
             controlled = ControlledAction(
                 ActionIntent(
                     raw["actor_id"],
                     ActionKind(raw["action"]),
                     target_location_id=raw["target_location_id"],
                     quantity=raw["quantity"],
+                    interaction=interaction,
                 ),
                 raw["controller"],
                 raw["reason_code"],
@@ -2348,6 +2570,12 @@ def _strict_replay_versioned(
                     ("user", "user.selected"),
                     ("baseline_policy", "policy.baseline"),
                 }
+                if (
+                    expected_version == 6
+                    and controlled.intent.action is ActionKind.ENGAGE_INCIDENT
+                    and interaction is not None
+                ):
+                    allowed_provenance.add(("user", "user.text_alias"))
             else:
                 allowed_provenance = {("baseline_policy", "policy.baseline")}
             if (
@@ -2361,17 +2589,14 @@ def _strict_replay_versioned(
                     ActionKind(raw["action"]),
                     target_location_id=raw["target_location_id"],
                     quantity=raw["quantity"],
+                    interaction=interaction,
                 )
             )
         expected_actor_order = tuple(
-            actor_id
-            for actor_id in party_before.member_ids
-            if world.adventurers[actor_id].alive
+            actor_id for actor_id in party_before.member_ids if world.adventurers[actor_id].alive
         )
         if tuple(intent.adventurer_id for intent in intents) != expected_actor_order:
-            raise ValueError(
-                f"record {record.seq} proposals are not in canonical party order"
-            )
+            raise ValueError(f"record {record.seq} proposals are not in canonical party order")
         hourly = scheduler.run_hour(world, intents)
         if [to_json_value(event) for event in hourly.events] != payload.get("action_events"):
             raise ValueError(f"record {record.seq} action events do not match the engine result")
@@ -2382,9 +2607,7 @@ def _strict_replay_versioned(
         hero = action_world.adventurers[party.selected_hero_id]
         available_locations = (hero.location_id,)
         available_quests = (
-            ("echoes-at-emberfall",)
-            if hero.location_id == "emberfall-quest-hall"
-            else ()
+            ("echoes-at-emberfall",) if hero.location_id == "emberfall-quest-hall" else ()
         )
         completed_objectives = (
             ("echoes-at-emberfall",)
@@ -2402,9 +2625,7 @@ def _strict_replay_versioned(
             "available_location_ids": list(available_locations),
             "available_quest_ids": list(available_quests),
             "completed_objective_quest_ids": list(completed_objectives),
-            "relationship_score": [
-                str(story.relationship_score(HERO_ID, "rhea-vale"))
-            ],
+            "relationship_score": [str(story.relationship_score(HERO_ID, "rhea-vale"))],
         }
         if payload.get("story_facts") != facts:
             raise ValueError(f"record {record.seq} story facts do not match observed facts")
@@ -2443,9 +2664,7 @@ def _strict_replay_versioned(
             "event": to_json_value(resolution.event),
             "story": to_json_value(resolution.story),
             "party_member_ids": list(
-                resolution.world.party.member_ids
-                if resolution.world.party is not None
-                else ()
+                resolution.world.party.member_ids if resolution.world.party is not None else ()
             ),
         }
         if payload.get("story_resolution") != expected_resolution:
@@ -2472,6 +2691,8 @@ def _strict_replay_versioned(
     digest = (
         _legacy_v2_world_digest(world)
         if expected_version == 2
+        else _pre_v6_world_digest(world)
+        if expected_version <= 5
         else _world_digest(world)
     )
     if world.tick != init["final_tick"] or digest != init["final_world_digest"]:
@@ -2493,7 +2714,7 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
         and records[0].event.get("record_type") == "run_init"
     ):
         schema_version = records[0].event.get("schema_version")
-        if type(schema_version) is not int or schema_version not in {2, 3, 4, 5}:
+        if type(schema_version) is not int or schema_version not in {2, 3, 4, 5, 6}:
             raise ValueError("unsupported versioned run initialization")
         return _strict_replay_versioned(
             records,
@@ -2523,9 +2744,7 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
         if party is None:
             raise ValueError("replay world has no runtime party")
         expected_actor_ids = {
-            actor_id
-            for actor_id in party.member_ids
-            if world.adventurers[actor_id].alive
+            actor_id for actor_id in party.member_ids if world.adventurers[actor_id].alive
         }
         actor_ids = tuple(_event_fields(record)[2] for record in tick_records)
         if len(actor_ids) != len(set(actor_ids)):
@@ -2572,12 +2791,9 @@ def _render_history_list(archive: HistoryArchive) -> str:
         lines.append("(저장된 회차 없음)")
     for run in runs:
         hero_name = _history_text(run.metadata.get("hero_name", "알 수 없음"))
-        character_class = _history_text(
-            run.metadata.get("character_class_ko", "알 수 없음")
-        )
+        character_class = _history_text(run.metadata.get("character_class_ko", "알 수 없음"))
         lines.append(
-            f"{run.run_number}회차 | {hero_name} · {character_class} | "
-            f"기록 {run.record_count}건"
+            f"{run.run_number}회차 | {hero_name} · {character_class} | 기록 {run.record_count}건"
         )
     return "\n".join(lines) + "\n"
 
@@ -2585,9 +2801,7 @@ def _render_history_list(archive: HistoryArchive) -> str:
 def _render_history_details(archive: HistoryArchive, run_number: int) -> str:
     run = archive.load_run(run_number)
     hero_name = _history_text(run.metadata.get("hero_name", "알 수 없음"))
-    character_class = _history_text(
-        run.metadata.get("character_class_ko", "알 수 없음")
-    )
+    character_class = _history_text(run.metadata.get("character_class_ko", "알 수 없음"))
     lines = [
         f"══ {run.run_number}회차 히스토리 ══",
         f"주인공: {hero_name} · {character_class}",
@@ -2612,9 +2826,7 @@ def _render_history_details(archive: HistoryArchive, run_number: int) -> str:
             party = record.payload.get("party", [])
             actor_names = (
                 {
-                    raw_member.get("id"): _history_text(
-                        raw_member.get("name", "알 수 없음")
-                    )
+                    raw_member.get("id"): _history_text(raw_member.get("name", "알 수 없음"))
                     for raw_member in party
                     if isinstance(raw_member, dict) and isinstance(raw_member.get("id"), str)
                 }
@@ -2653,15 +2865,15 @@ def _render_history_details(archive: HistoryArchive, run_number: int) -> str:
                         "recruit_companion": "동료 합류",
                         "depart_companion": "동료 이탈",
                     }.get(
-                        opportunity_value
-                        if isinstance(opportunity_value, str)
-                        else "",
+                        opportunity_value if isinstance(opportunity_value, str) else "",
                         "알 수 없는 사건",
                     )
                     evidence = raw_event.get("evidence_ids", [])
-                    evidence_text = ", ".join(
-                        _history_text(item) for item in evidence if isinstance(item, str)
-                    ) if isinstance(evidence, list) else ""
+                    evidence_text = (
+                        ", ".join(_history_text(item) for item in evidence if isinstance(item, str))
+                        if isinstance(evidence, list)
+                        else ""
+                    )
                     lines.append(f"[이야기] {scene} · {opportunity}")
                     if evidence_text:
                         lines.append(f"근거 ID: {evidence_text}")
@@ -2708,13 +2920,7 @@ def _run_home(
             frame_writer=frame_writer,
         )
     while True:
-        stdout.write(
-            "\n══ The Glass Frontier ══\n"
-            "1. 시작하기\n"
-            "2. 히스토리\n"
-            "3. 종료\n"
-            "선택: "
-        )
+        stdout.write("\n══ The Glass Frontier ══\n1. 시작하기\n2. 히스토리\n3. 종료\n선택: ")
         stdout.flush()
         choice = stdin.readline()
         if choice == "":
@@ -2919,11 +3125,7 @@ def _run_home_textual(
                 (
                     MenuOption[str | None](
                         "이야기 방식",
-                        (
-                            "현재: 풍부한 이야기"
-                            if use_rich_story
-                            else "현재: 간결한 이야기"
-                        ),
+                        ("현재: 풍부한 이야기" if use_rich_story else "현재: 간결한 이야기"),
                         "story-mode",
                     ),
                     MenuOption[str | None]("뒤로", "메인 메뉴로 돌아갑니다", None),
@@ -3177,7 +3379,5 @@ def main(
             verify_hash=args.verify_hash,
         )
     if args.command != "simulate" or args.headless or runner is not None:
-        stream.write(
-            render_simulation(result.events, result.adventurers, result.summary, width=80)
-        )
+        stream.write(render_simulation(result.events, result.adventurers, result.summary, width=80))
     return 0

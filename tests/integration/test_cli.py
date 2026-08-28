@@ -18,6 +18,7 @@ from aincrad.cli import (
     _default_run,
     _event_fields,
     _prompt_for_intent,
+    _prompt_for_intent_menu,
     _render_history_details,
     _run_hours,
     _starting_world,
@@ -66,13 +67,24 @@ def sample_result() -> SimulationResult:
     )
 
 
-def test_committed_v2_log_remains_hash_verified_replayable() -> None:
-    event_log = Path(__file__).parents[1] / "fixtures" / "v2_events_warrior.jsonl"
+@pytest.mark.parametrize(
+    ("fixture_name", "event_count"),
+    (
+        ("v2_events_warrior.jsonl", 2),
+        ("v3_events_warrior.jsonl", 2),
+        ("v4_events_warrior.jsonl", 1),
+        ("v5_events_warrior.jsonl", 1),
+    ),
+)
+def test_committed_v2_to_v5_logs_remain_hash_verified_replayable(
+    fixture_name: str, event_count: int
+) -> None:
+    event_log = Path(__file__).parents[1] / "fixtures" / fixture_name
 
     replayed = _default_replay(event_log=event_log, verify_hash=True)
 
     assert replayed.summary.status == "해시 검증 완료"
-    assert replayed.summary.event_count == 2
+    assert replayed.summary.event_count == event_count
 
 
 def test_movement_awards_zero_xp_and_round_trips_through_hash_replay(
@@ -93,8 +105,8 @@ def test_movement_awards_zero_xp_and_round_trips_through_hash_replay(
     )
 
     records = EventLog(event_log).verify()
-    assert records[0].event["schema_version"] == 5
-    assert records[0].event["rules_version"] == 4
+    assert records[0].event["schema_version"] == 6
+    assert records[0].event["rules_version"] == 5
     tick = records[1].event
     hero_event = next(
         event
@@ -130,9 +142,9 @@ def test_identity_profile_round_trips_through_v3_log_and_history(tmp_path: Path)
     replayed = _default_replay(event_log=event_log, verify_hash=True)
 
     init = EventLog(event_log).verify()[0].event
-    assert init["version"] == 5
-    assert init["schema_version"] == 5
-    assert init["rules_version"] == 4
+    assert init["version"] == 6
+    assert init["schema_version"] == 6
+    assert init["rules_version"] == 5
     assert init["identity"] == identity.to_json()
     assert replayed.adventurers == simulated.adventurers
     assert HistoryArchive(history_root).load_run(1).metadata["identity"] == identity.to_json()
@@ -534,6 +546,72 @@ def test_prompt_always_lists_ai_delegation_last() -> None:
     ai_option = next(line for line in lines if "AI 판단에 맡긴다" in line)
     assert ai_option.startswith(f"{len(allowed) + 1}.")
     assert "AI 선택" in stdout.getvalue()
+
+
+def test_keyboard_facility_incident_walk_returns_one_interaction_selection() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    stdout = StringIO()
+
+    selected = _prompt_for_intent_menu(
+        world,
+        "hero",
+        key_reader=Keys(
+            Key.ENTER,
+            Key.DOWN,
+            Key.DOWN,
+            Key.DOWN,
+            Key.DOWN,
+            Key.ENTER,
+            Key.ENTER,
+            Key.DOWN,
+            Key.ENTER,
+        ),
+        stdout=stdout,
+    )
+
+    assert selected.reason_code == "user.selected"
+    assert selected.intent.action is ActionKind.ENGAGE_INCIDENT
+    assert selected.intent.target_location_id == "emberfall-shop"
+    assert selected.intent.interaction is not None
+    assert selected.intent.interaction.path == (
+        ("crate-opening", "inspect-crate"),
+        ("crate-findings", "buy-discounted"),
+    )
+    assert "금 간 화물 상자" in stdout.getvalue()
+
+
+def test_keyboard_repeated_escape_abandons_incident_without_recursing_or_mutating_world() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    escape_walk = (
+        Key.ENTER,
+        Key.DOWN,
+        Key.DOWN,
+        Key.DOWN,
+        Key.DOWN,
+        Key.ENTER,
+        Key.BACK,
+    )
+    selected = _prompt_for_intent_menu(
+        world,
+        "hero",
+        key_reader=Keys(
+            *escape_walk,
+            *escape_walk,
+            *escape_walk,
+            Key.DOWN,
+            Key.DOWN,
+            Key.DOWN,
+            Key.DOWN,
+            Key.DOWN,
+            Key.DOWN,
+            Key.ENTER,
+        ),
+        stdout=StringIO(),
+    )
+
+    assert selected.intent.action is ActionKind.OBSERVE
+    assert world.tick == 0
+    assert world.adventurers["hero"].location_id == "emberfall"
 
 
 def test_two_hours_collect_one_action_from_each_adventurer() -> None:
@@ -1049,3 +1127,51 @@ def test_injected_modern_runner_receives_hours_and_new_options(tmp_path: Path) -
     assert received["character_class"] is CharacterClass.TANK
     assert received["history_root"] == history_root
     assert received["hours"] == 1
+
+
+def test_schema_v6_replay_rejects_raw_text_in_a_rehashed_interaction_proposal(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    _default_run(
+        seed=7,
+        hours=1,
+        headless=True,
+        output=source,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+    )
+    records = EventLog(source).verify()
+    tick = dict(records[1].event)
+    proposal = dict(tick["proposals"][0])
+    proposal["raw_text"] = "절대 기록되면 안 되는 입력"
+    tick["proposals"] = [proposal]
+    malformed = tmp_path / "raw-text.jsonl"
+    _write_rehashed_v2_log(malformed, records, [tick])
+
+    with pytest.raises(ValueError, match="invalid proposal"):
+        _default_replay(event_log=malformed, verify_hash=True)
+
+
+def test_schema_v6_replay_rejects_boolean_proposal_quantity(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.jsonl"
+    _default_run(
+        seed=7,
+        hours=1,
+        headless=True,
+        output=source,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+    )
+    records = EventLog(source).verify()
+    tick = dict(records[1].event)
+    proposal = dict(tick["proposals"][0])
+    proposal["quantity"] = True
+    tick["proposals"] = [proposal]
+    malformed = tmp_path / "boolean-quantity.jsonl"
+    _write_rehashed_v2_log(malformed, records, [tick])
+
+    with pytest.raises(ValueError, match="invalid proposal quantity"):
+        _default_replay(event_log=malformed, verify_hash=True)

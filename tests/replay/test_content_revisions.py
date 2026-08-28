@@ -11,6 +11,7 @@ import aincrad.simulation.scenario as scenario_module
 from aincrad.cli import _default_replay
 from aincrad.content.actions import expected_action_kinds
 from aincrad.content.fixtures import load_packaged_world_fixture
+from aincrad.persistence import EventLog
 from aincrad.simulation import create_initial_world
 
 
@@ -110,6 +111,55 @@ def test_schema_v4_rules_v3_replay_uses_frozen_content_when_current_content_evol
         if revision == "current":
             return evolved
         raise ValueError("unsupported content revision")
+
+    monkeypatch.setattr(scenario_module, "load_packaged_world_fixture", evolved_loader)
+
+    replayed = _default_replay(event_log=fixture_path, verify_hash=True)
+
+    assert replayed.summary.status == "해시 검증 완료"
+
+
+def test_schema_v5_rules_v4_replay_uses_frozen_pre_incident_content_when_current_evolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "v5_events_warrior.jsonl"
+    stored = EventLog(fixture_path).verify()
+    assert stored[0].event["schema_version"] == 5
+    assert all("interaction" not in proposal for proposal in stored[1].event["proposals"])
+    frozen = load_packaged_world_fixture(revision="rules-v4")
+    evolved = deepcopy(load_packaged_world_fixture())
+    evolved["towns"][0]["facilities"][0]["interactions"] = [
+        {
+            "id": "future-incident",
+            "npc_id": "npc-orrin",
+            "title_ko": "미래 사건",
+            "entry_prompt_id": "entry",
+            "prompts": [
+                {
+                    "id": "entry",
+                    "text_ko": "미래의 선택입니다.",
+                    "responses": [
+                        {
+                            "id": "finish",
+                            "label_ko": "끝낸다",
+                            "terminal": {
+                                "outcome_code": "future-finished",
+                                "gold_delta": 0,
+                                "resource_delta": 0,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    def evolved_loader(*, revision: str = "current"):
+        if revision == "rules-v4":
+            return frozen
+        if revision == "current":
+            return evolved
+        return load_packaged_world_fixture(revision=revision)
 
     monkeypatch.setattr(scenario_module, "load_packaged_world_fixture", evolved_loader)
 

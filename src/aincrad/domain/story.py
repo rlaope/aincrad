@@ -68,8 +68,7 @@ class StoryState:
             relationship_items = list(relationship_scores)
         else:
             relationship_items = [
-                (source, target, score)
-                for (source, target), score in relationship_scores.items()
+                (source, target, score) for (source, target), score in relationship_scores.items()
             ]
         frozen_quests = tuple(sorted(quest_items, key=lambda item: item[0]))
         frozen_relationships = tuple(sorted(relationship_items))
@@ -93,9 +92,8 @@ class StoryState:
             raise ValueError("resolved candidate ids must be canonical lowercase SHA-256 hex")
         for template_id in template_ids:
             _require_safe_token(template_id, "resolved template id")
-        if (
-            len(set(candidate_ids)) != len(candidate_ids)
-            or len(set(template_ids)) != len(template_ids)
+        if len(set(candidate_ids)) != len(candidate_ids) or len(set(template_ids)) != len(
+            template_ids
         ):
             raise ValueError("resolved ids must be unique")
         object.__setattr__(self, "quest_states", frozen_quests)

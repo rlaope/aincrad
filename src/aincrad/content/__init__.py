@@ -3,7 +3,9 @@
 from .actions import (
     action_catalog_from_fixture,
     available_action_intents,
+    available_facility_interactions,
     contextual_action_for_intent,
+    interaction_catalog_from_fixture,
 )
 from .fixtures import (
     CompletionFixture,
@@ -30,8 +32,10 @@ from .npcs import (
 __all__ = [
     "action_catalog_from_fixture",
     "available_action_intents",
+    "available_facility_interactions",
     "CompletionFixture",
     "contextual_action_for_intent",
+    "interaction_catalog_from_fixture",
     "DungeonFixture",
     "FacilityFixture",
     "FixtureSchemaError",

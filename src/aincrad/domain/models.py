@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -69,6 +70,7 @@ class ActionKind(StrEnum):
     SEARCH = "search"
     FIGHT = "fight"
     CHALLENGE = "challenge"
+    ENGAGE_INCIDENT = "engage_incident"
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +117,95 @@ class ContextualAction:
             raise ValueError("contextual restoration cannot be negative")
 
 
+_INTERACTION_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
+
+
+def _interaction_id(value: str, field: str) -> None:
+    if not isinstance(value, str) or _INTERACTION_ID.fullmatch(value) is None:
+        raise ValueError(f"{field} must be a safe non-empty id")
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalEffect:
+    outcome_code: str
+    gold_delta: int = 0
+    resource_delta: int = 0
+
+    def __post_init__(self) -> None:
+        _interaction_id(self.outcome_code, "outcome_code")
+        if type(self.gold_delta) is not int or type(self.resource_delta) is not int:
+            raise ValueError("terminal deltas must be integers")
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionResponse:
+    id: str
+    label_ko: str
+    aliases_ko: tuple[str, ...] = ()
+    next_prompt_id: str | None = None
+    terminal: TerminalEffect | None = None
+
+    def __post_init__(self) -> None:
+        _interaction_id(self.id, "response id")
+        if not self.label_ko.strip() or (self.next_prompt_id is None) == (self.terminal is None):
+            raise ValueError("response requires label and exactly one continuation")
+        if self.next_prompt_id is not None:
+            _interaction_id(self.next_prompt_id, "next prompt id")
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionPrompt:
+    id: str
+    text_ko: str
+    responses: tuple[InteractionResponse, ...]
+
+    def __post_init__(self) -> None:
+        _interaction_id(self.id, "prompt id")
+        if not self.text_ko.strip() or not self.responses:
+            raise ValueError("prompt requires text and responses")
+        if len({response.id for response in self.responses}) != len(self.responses):
+            raise ValueError("prompt response ids must be unique")
+
+
+@dataclass(frozen=True, slots=True)
+class FacilityInteraction:
+    id: str
+    npc_id: str
+    title_ko: str
+    entry_prompt_id: str
+    prompts: tuple[InteractionPrompt, ...]
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.id, "incident id"),
+            (self.npc_id, "npc id"),
+            (self.entry_prompt_id, "entry prompt id"),
+        ):
+            _interaction_id(value, label)
+        if not self.title_ko.strip() or not self.prompts:
+            raise ValueError("incident requires title and prompts")
+        if len({prompt.id for prompt in self.prompts}) != len(self.prompts):
+            raise ValueError("incident prompt ids must be unique")
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionSelection:
+    incident_id: str
+    path: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        _interaction_id(self.incident_id, "incident id")
+        if not 1 <= len(self.path) <= 4:
+            raise ValueError("interaction path must contain 1 through 4 steps")
+        prompts: list[str] = []
+        for prompt_id, response_id in self.path:
+            _interaction_id(prompt_id, "prompt id")
+            _interaction_id(response_id, "response id")
+            prompts.append(prompt_id)
+        if len(set(prompts)) != len(prompts):
+            raise ValueError("interaction path cannot repeat prompts")
+
+
 @dataclass(frozen=True, slots=True)
 class Location:
     id: str
@@ -129,6 +220,7 @@ class Location:
     description: str = ""
     services: tuple[str, ...] = ()
     contextual_actions: tuple[ContextualAction, ...] = ()
+    interactions: tuple[FacilityInteraction, ...] = ()
 
     def __post_init__(self) -> None:
         if self.stage is not None and self.stage <= 0:
@@ -145,6 +237,8 @@ class Location:
             raise ValueError("location contextual action ids must be unique")
         if len({action.kind for action in self.contextual_actions}) != len(self.contextual_actions):
             raise ValueError("location contextual action kinds must be unique")
+        if len({interaction.id for interaction in self.interactions}) != len(self.interactions):
+            raise ValueError("location interaction ids must be unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +290,7 @@ class ActionIntent:
     action: ActionKind | str
     target_location_id: str | None = None
     quantity: int = 1
+    interaction: InteractionSelection | None = None
 
 
 @dataclass(frozen=True, slots=True)
