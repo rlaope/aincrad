@@ -14,6 +14,7 @@ from aincrad.domain import (
     CharacterClass,
 )
 from aincrad.domain.identity import HERO_ID
+from aincrad.domain.rules import apply_intent
 from aincrad.tui.narrative import render_turn_story
 
 
@@ -102,14 +103,15 @@ def test_turn_story_attributes_encounter_damage_to_combat_not_movement() -> None
 
 
 def test_turn_story_narrates_movement_destination_and_hazard_result() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    hero = replace(world.adventurers[HERO_ID], location_id="mossreach-vaultgate")
+    world = replace(world, adventurers={**world.adventurers, hero.id: hero})
     result = _run_hours(
-        _starting_world(CharacterClass.WARRIOR, "유리별"),
+        world,
         seed=11,
-        hours=2,
-        chooser=lambda world, actor_id: ActionIntent(
-            actor_id,
-            ActionKind.MOVE,
-            target_location_id=("mossreach" if world.tick == 0 else "vault-1"),
+        hours=1,
+        chooser=lambda _world, actor_id: ActionIntent(
+            actor_id, ActionKind.MOVE, target_location_id="vault-1"
         ),
         direct_hero_only=True,
     )
@@ -130,30 +132,27 @@ def test_turn_story_narrates_movement_destination_and_hazard_result() -> None:
     assert "HP" in rendered
 
 
-def test_turn_story_uses_the_correct_direction_particle_for_vowel_ending_place() -> None:
+def test_turn_story_projects_facility_action_with_the_correct_korean_particle() -> None:
     world = _starting_world(CharacterClass.WARRIOR, "유리별")
-    result = _run_hours(
+    result, events = apply_intent(
         world,
-        seed=7,
-        hours=1,
-        chooser=lambda _world, actor_id: ActionIntent(
-            actor_id,
-            ActionKind.MOVE,
+        ActionIntent(
+            HERO_ID,
+            ActionKind.BROWSE_GOODS,
             target_location_id="emberfall-shop",
         ),
-        direct_hero_only=True,
     )
 
     rendered = "\n".join(
         render_turn_story(
-            result.final_state,
-            result.events,
+            result,
+            events,
             controllers={HERO_ID: "user"},
             story_event_text=None,
         )
     )
 
-    assert "잿불창고 교역소로 향했다" in rendered
+    assert "잿불창고 교역소에" in rendered
     assert "잿불창고 교역소으로" not in rendered
 
 

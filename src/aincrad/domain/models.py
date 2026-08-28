@@ -16,6 +16,13 @@ class LocationKind(StrEnum):
     DUNGEON = "dungeon"
 
 
+class EdgeKind(StrEnum):
+    SCENE = "scene"
+    OVERLAND = "overland"
+    DUNGEON_GATE = "dungeon_gate"
+    DUNGEON = "dungeon"
+
+
 class CharacterClass(StrEnum):
     WARRIOR = "warrior"
     ARCHER = "archer"
@@ -126,6 +133,29 @@ def _interaction_id(value: str, field: str) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class TravelEdge:
+    """One reciprocal, typed geographic connection between two locations."""
+
+    to: str
+    kind: EdgeKind
+    path_ko: str
+
+    def __post_init__(self) -> None:
+        if type(self.to) is not str:
+            raise ValueError("edge target must be exact text")
+        _interaction_id(self.to, "edge target")
+        if type(self.kind) is not EdgeKind:
+            raise ValueError("edge kind must be an exact EdgeKind")
+        if (
+            type(self.path_ko) is not str
+            or not self.path_ko.strip()
+            or len(self.path_ko) > 120
+            or re.search("[가-힣]", self.path_ko) is None
+        ):
+            raise ValueError("edge path must be bounded non-empty Korean text")
+
+
+@dataclass(frozen=True, slots=True)
 class TerminalEffect:
     outcome_code: str
     gold_delta: int = 0
@@ -211,7 +241,9 @@ class Location:
     id: str
     name: str
     kind: LocationKind
-    connections: tuple[str, ...] = ()
+    region: str
+    terrain: str
+    edges: tuple[TravelEdge, ...] = ()
     stage: int | None = None
     is_boss_room: bool = False
     boss_id: str | None = None
@@ -223,6 +255,16 @@ class Location:
     interactions: tuple[FacilityInteraction, ...] = ()
 
     def __post_init__(self) -> None:
+        _interaction_id(self.id, "location id")
+        _interaction_id(self.region, "location region")
+        _interaction_id(self.terrain, "location terrain")
+        if any(type(edge) is not TravelEdge for edge in self.edges):
+            raise ValueError("location edges must be TravelEdge values")
+        targets = tuple(edge.to for edge in self.edges)
+        if self.id in targets:
+            raise ValueError("location edges cannot be self edges")
+        if len(set(targets)) != len(targets):
+            raise ValueError("location edges cannot have duplicate targets")
         if self.stage is not None and self.stage <= 0:
             raise ValueError("location stage must be positive")
         if self.is_boss_room and self.stage is None:
@@ -239,6 +281,12 @@ class Location:
             raise ValueError("location contextual action kinds must be unique")
         if len({interaction.id for interaction in self.interactions}) != len(self.interactions):
             raise ValueError("location interaction ids must be unique")
+
+    @property
+    def connections(self) -> tuple[str, ...]:
+        """Compatibility projection; serialized state stores only typed edges."""
+
+        return tuple(edge.to for edge in self.edges)
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,6 +383,33 @@ class WorldState:
             raise ValueError("adventurer keys must match ids")
         if any(a.location_id not in locations for a in adventurers.values()):
             raise ValueError("every adventurer must occupy an existing location")
+        for location in locations.values():
+            for edge in location.edges:
+                target = locations.get(edge.to)
+                if target is None:
+                    raise ValueError("unknown edge target")
+                reverse = next(
+                    (candidate for candidate in target.edges if candidate.to == location.id),
+                    None,
+                )
+                if reverse is None:
+                    raise ValueError("asymmetric edge")
+                if reverse.kind is not edge.kind:
+                    raise ValueError("edge kind mismatch")
+                if edge.kind is EdgeKind.SCENE:
+                    facility, hub = (
+                        (location, target) if location.services else (target, location)
+                    )
+                    if (
+                        not facility.services
+                        or hub.services
+                        or facility.kind is not LocationKind.TOWN
+                        or hub.kind is not LocationKind.TOWN
+                        or facility.region != hub.region
+                        or len(facility.edges) != 1
+                        or facility.edges[0].kind is not EdgeKind.SCENE
+                    ):
+                        raise ValueError("invalid scene edge shape")
         party = self.party
         if party is None:
             member_ids = tuple(sorted(adventurers))

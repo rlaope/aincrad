@@ -34,7 +34,7 @@ def test_successful_gather_awards_bounded_xp_and_spends_mp() -> None:
     ("intent", "location_id", "starting_stats"),
     (
         (
-            ActionIntent("hero", ActionKind.MOVE, target_location_id="mossreach"),
+            ActionIntent("hero", ActionKind.MOVE, target_location_id="mossreach-terraces"),
             "emberfall",
             None,
         ),
@@ -205,7 +205,7 @@ def test_dungeon_hazard_can_cause_permanent_death() -> None:
     hero = world.adventurers["hero"]
     fragile = replace(
         hero,
-        location_id="mossreach",
+        location_id="mossreach-vaultgate",
         stats=replace(hero.stats, hp=1),
     )
     world = replace(world, adventurers={fragile.id: fragile})
@@ -230,7 +230,7 @@ def test_scheduler_does_not_apply_movement_specific_companion_events() -> None:
 
     moved = SimulationScheduler(seed=5).run_hour(
         world,
-        (ActionIntent("hero", ActionKind.MOVE, target_location_id="mossreach"),),
+        (ActionIntent("hero", ActionKind.MOVE, target_location_id="mossreach-terraces"),),
     )
 
     party = moved.final_state.party

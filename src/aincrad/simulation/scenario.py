@@ -5,13 +5,56 @@ from typing import cast
 
 from aincrad.content.actions import action_catalog_from_fixture, interaction_catalog_from_fixture
 from aincrad.content.fixtures import load_packaged_world_fixture
-from aincrad.domain import Adventurer, CharacterClass, Location, LocationKind, Stats, WorldState
+from aincrad.domain import (
+    Adventurer,
+    CharacterClass,
+    EdgeKind,
+    Location,
+    LocationKind,
+    Stats,
+    TravelEdge,
+    WorldState,
+)
 
 _CHARACTER_CLASSES = {
     "vanguard": CharacterClass.WARRIOR,
     "pathfinder": CharacterClass.ARCHER,
     "arcanist": CharacterClass.MAGE,
 }
+
+
+def _legacy_edge_kind(location_id: str, target_id: str) -> EdgeKind:
+    endpoints = frozenset((location_id, target_id))
+    if location_id.startswith("emberfall-") or target_id.startswith("emberfall-"):
+        return EdgeKind.SCENE
+    if endpoints == {"mossreach", "vault-1"}:
+        return EdgeKind.DUNGEON_GATE
+    if location_id.startswith("vault-") and target_id.startswith("vault-"):
+        return EdgeKind.DUNGEON
+    return EdgeKind.OVERLAND
+
+
+def _legacy_geography(location_id: str) -> tuple[str, str]:
+    if location_id.startswith("emberfall-"):
+        return "emberfall-town", "town-facility"
+    if location_id == "emberfall":
+        return "emberfall-town", "shard-spring"
+    if location_id == "mossreach":
+        return "mossreach-wilds", "glass-upland"
+    return "starless-vault", "vault-depth"
+
+
+def _record_edges(record: Mapping[str, object], *, content_revision: str) -> tuple[TravelEdge, ...]:
+    if content_revision == "current":
+        return tuple(
+            TravelEdge(edge["to"], EdgeKind(edge["kind"]), edge["path_ko"])
+            for edge in cast(Sequence[Mapping[str, str]], record["edges"])
+        )
+    location_id = cast(str, record["id"])
+    return tuple(
+        TravelEdge(target_id, _legacy_edge_kind(location_id, target_id), "기록된 연결 길")
+        for target_id in cast(Sequence[str], record["connections"])
+    )
 
 
 def create_initial_world(*, content_revision: str = "current") -> WorldState:
@@ -29,6 +72,7 @@ def create_initial_world(*, content_revision: str = "current") -> WorldState:
         *fixture["dungeons"][0]["floors"],
     ]
     for record in location_records:
+        record_data = cast(Mapping[str, object], record)
         location_id = record["id"]
         raw_kind = record["kind"]
         kind = (
@@ -40,11 +84,18 @@ def create_initial_world(*, content_revision: str = "current") -> WorldState:
         )
         completion = record.get("completion")
         completion_data = cast(dict[str, object], completion) if completion is not None else {}
+        region, terrain = (
+            (cast(str, record_data["region"]), cast(str, record_data["terrain"]))
+            if content_revision == "current"
+            else _legacy_geography(location_id)
+        )
         locations[location_id] = Location(
             id=location_id,
             name=record["name"],
             kind=kind,
-            connections=tuple(record["connections"]),
+            region=region,
+            terrain=terrain,
+            edges=_record_edges(record, content_revision=content_revision),
             stage=cast(int | None, record.get("depth")),
             is_boss_room=raw_kind == "boss_room",
             boss_id=cast(str | None, completion_data.get("boss_id")),

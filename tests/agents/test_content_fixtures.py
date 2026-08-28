@@ -23,7 +23,7 @@ def test_original_world_fixture_has_three_candidate_adventurers() -> None:
 
     assert world["schema_version"] == 1
     assert len(world["towns"]) == 1
-    assert len(world["hunting_grounds"]) == 1
+    assert len(world["hunting_grounds"]) == 3
     assert len(world["adventurers"]) == 3
     assert len({item["id"] for item in world["adventurers"]}) == 3
     assert all(item["location_id"] in world["location_ids"] for item in world["adventurers"])
@@ -78,8 +78,8 @@ def test_starless_vault_is_connected_through_boss_and_world_transition() -> None
     assert floors[-1]["completion"]["transition_id"] == "aurora-lift-floor-2"
     assert floors[-1]["completion"]["rewards"]
     for current, following in zip(floors, floors[1:], strict=False):
-        assert following["id"] in current["connections"]
-        assert current["id"] in following["connections"]
+        assert following["id"] in {edge["to"] for edge in current["edges"]}
+        assert current["id"] in {edge["to"] for edge in following["edges"]}
 
 
 def test_general_npcs_are_declared_as_rule_based_facility_services() -> None:
@@ -145,7 +145,9 @@ def test_fixture_validator_requires_localized_action_display_metadata(field: str
     [
         (lambda world: world["dungeons"][0]["floors"][3].update(depth=8), "depths"),
         (
-            lambda world: world["dungeons"][0]["floors"][4]["connections"].append("missing-room"),
+            lambda world: world["dungeons"][0]["floors"][4]["edges"][0].update(
+                to="missing-room"
+            ),
             "unknown connection",
         ),
         (

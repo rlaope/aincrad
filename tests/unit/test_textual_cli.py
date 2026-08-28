@@ -11,6 +11,7 @@ import pytest
 from aincrad.cli import (
     _AI_CHOICE,
     _DIRECT_TEXT_CHOICE,
+    _MAP_CHOICE,
     _MOVE_CHOICE,
     _available_intents,
     _default_replay,
@@ -268,7 +269,7 @@ def test_textual_movement_is_three_explained_destinations_plus_other() -> None:
     outside_move = next(
         intent
         for intent in _available_intents(world, "hero")
-        if intent.target_location_id == "mossreach"
+        if intent.target_location_id == "mossreach-terraces"
     )
     interaction = FakeInteraction(_MOVE_CHOICE, outside_move)
 
@@ -281,10 +282,45 @@ def test_textual_movement_is_three_explained_destinations_plus_other() -> None:
     assert selected.intent == outside_move
     assert [title for title, _ in interaction.menus] == ["유리별의 행동", "이동할 곳"]
     movement_options = interaction.menus[1][1]
-    assert len(movement_options) == 2
+    assert len(movement_options) == 3
+    assert movement_options[-2].label == "지도 보기"
     assert movement_options[-1].label == "기타 목적지"
-    assert all("물리적:" in option.description for option in movement_options[:-1])
-    assert all("사회적:" in option.description for option in movement_options[:-1])
+    travel_options = tuple(
+        option for option in movement_options if isinstance(option.value, ActionIntent)
+    )
+    assert [option.value for option in travel_options] == [outside_move]
+    assert all("물리적:" in option.description for option in travel_options)
+    assert all("사회적:" in option.description for option in travel_options)
+
+
+def test_textual_map_shows_far_nodes_without_exposing_remote_move_intents() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    outside_move = next(
+        intent
+        for intent in _available_intents(world, "hero")
+        if intent.target_location_id == "mossreach-terraces"
+    )
+    interaction = FakeInteraction(_MOVE_CHOICE, _MAP_CHOICE, outside_move)
+
+    selected = _prompt_for_intent_textual(
+        world,
+        "hero",
+        interaction=interaction,  # type: ignore[arg-type]
+    )
+
+    assert selected.intent == outside_move
+    assert interaction.text_screens[0][0] == "유리 국경 지도"
+    rendered_map = "\n".join(interaction.text_screens[0][1])
+    assert "이끼자락 황야" in rendered_map
+    assert "원거리 위치는 지도에서만 확인할 수 있으며 바로 선택할 수 없습니다." in rendered_map
+    move_values = tuple(
+        option.value
+        for title, options in interaction.menus
+        if title == "이동할 곳"
+        for option in options
+        if isinstance(option.value, ActionIntent)
+    )
+    assert move_values == (outside_move, outside_move)
 
 
 def test_emberfall_facility_selection_opens_a_resident_grounded_submenu() -> None:
@@ -865,8 +901,8 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     replayed = _default_replay(event_log=event_logs[0], verify_hash=True)
     assert replayed.summary.status == "해시 검증 완료"
     records = EventLog(event_logs[0]).verify()
-    assert records[0].event["schema_version"] == 6
-    assert records[0].event["rules_version"] == 5
+    assert records[0].event["schema_version"] == 7
+    assert records[0].event["rules_version"] == 6
     assert records[1].event["action_events"][0]["action"] == ActionKind.OBSERVE.value
 
 
@@ -1025,7 +1061,7 @@ def test_textual_ai_delegation_names_the_action_it_actually_resolved(tmp_path: P
     )
 
     rendered = "\n".join(interaction.story_screens[0][1])
-    assert "주변 상황을 살핀 유리별은 길을 골라 이끼자락 황야로 향했다" in rendered
+    assert "주변 상황을 살핀 유리별은 길을 골라 이끼자락 층계로 향했다" in rendered
     assert "경험치" not in rendered
     assert "AI가 활동" not in rendered
 
@@ -1045,7 +1081,9 @@ def test_textual_fatal_hour_shows_story_without_continue_menu(
             character_class, hero_name, content_revision=content_revision
         )
         hero = world.adventurers["hero"]
-        fragile = replace(hero, location_id="mossreach", stats=replace(hero.stats, hp=1))
+        fragile = replace(
+            hero, location_id="mossreach-vaultgate", stats=replace(hero.stats, hp=1)
+        )
         return replace(world, adventurers={**world.adventurers, fragile.id: fragile})
 
     monkeypatch.setattr("aincrad.cli._starting_world", fragile_world)

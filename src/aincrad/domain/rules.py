@@ -9,7 +9,9 @@ from .models import (
     Activity,
     Adventurer,
     ContextualAction,
+    EdgeKind,
     LocationKind,
+    TravelEdge,
     WorldState,
 )
 from .progression import apply_damage, restore_stats
@@ -37,6 +39,38 @@ def _contextual_action(
         if configured.kind is action
     )
     return matches[0] if len(matches) == 1 else None
+
+
+def _edge_to(world: WorldState, source_id: str, target_id: str) -> TravelEdge | None:
+    return next(
+        (edge for edge in world.locations[source_id].edges if edge.to == target_id),
+        None,
+    )
+
+
+def _is_scene_facility_target(world: WorldState, source_id: str, target_id: str) -> bool:
+    target = world.locations.get(target_id)
+    edge = _edge_to(world, source_id, target_id)
+    return (
+        target is not None
+        and edge is not None
+        and edge.kind is EdgeKind.SCENE
+        and bool(target.services)
+    )
+
+
+def _is_scene_egress(world: WorldState, source_id: str, target_id: str) -> bool:
+    """Allow a facility occupant to leave through its sole scene edge."""
+
+    source = world.locations[source_id]
+    target = world.locations[target_id]
+    edge = _edge_to(world, source_id, target_id)
+    return (
+        edge is not None
+        and edge.kind is EdgeKind.SCENE
+        and bool(source.services)
+        and not target.services
+    )
 
 
 def _apply_contextual_action(
@@ -203,7 +237,11 @@ def _succeeded(
 
 
 def apply_intent(
-    world: WorldState, intent: ActionIntent, *, gather_yield: int = 1
+    world: WorldState,
+    intent: ActionIntent,
+    *,
+    gather_yield: int = 1,
+    legacy_connection_moves: bool = False,
 ) -> tuple[WorldState, tuple[DomainEvent, ...]]:
     adventurer = world.adventurers.get(intent.adventurer_id)
     if adventurer is None:
@@ -222,12 +260,8 @@ def apply_intent(
         if intent.interaction is None:
             return _rejected(world, intent, "missing_interaction")
         if intent.target_location_id is not None:
-            target_location = world.locations.get(intent.target_location_id)
-            if (
-                adventurer.location_id != "emberfall"
-                or target_location is None
-                or intent.target_location_id not in world.locations["emberfall"].connections
-                or target_location.connections != ("emberfall",)
+            if not _is_scene_facility_target(
+                world, adventurer.location_id, intent.target_location_id
             ):
                 return _rejected(world, intent, "unexpected_target_location")
             return _apply_interaction(
@@ -235,12 +269,8 @@ def apply_intent(
             )
         return _apply_interaction(world, intent, adventurer)
     if intent.action is not ActionKind.MOVE and intent.target_location_id is not None:
-        target_location = world.locations.get(intent.target_location_id)
-        target_is_connected_facility = (
-            adventurer.location_id == "emberfall"
-            and target_location is not None
-            and intent.target_location_id in world.locations["emberfall"].connections
-            and target_location.connections == ("emberfall",)
+        target_is_connected_facility = _is_scene_facility_target(
+            world, adventurer.location_id, intent.target_location_id
         )
         if not target_is_connected_facility:
             return _rejected(world, intent, "unexpected_target_location")
@@ -269,15 +299,26 @@ def apply_intent(
 
     if intent.action is ActionKind.MOVE:
         destination = intent.target_location_id
+        if type(destination) is not str:
+            return _rejected(world, intent, "invalid_target_location")
         if destination not in world.locations:
             return _rejected(world, intent, "unknown_location")
-        if destination not in world.locations[adventurer.location_id].connections:
+        edge = _edge_to(world, adventurer.location_id, destination)
+        if edge is None:
             return _rejected(world, intent, "location_not_connected")
+        if (
+            edge.kind is EdgeKind.SCENE
+            and not legacy_connection_moves
+            and not _is_scene_egress(world, adventurer.location_id, destination)
+        ):
+            return _rejected(world, intent, "scene_edge_not_travel")
         return _succeeded(
             world,
             intent,
             replace(adventurer, location_id=destination, activity=Activity.MOVING),
-            (("destination", destination),),
+            (("destination", destination),)
+            if legacy_connection_moves
+            else (("destination", destination), ("edge_kind", edge.kind.value)),
         )
 
     if intent.action is ActionKind.REST:

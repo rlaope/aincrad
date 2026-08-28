@@ -10,10 +10,12 @@ from aincrad.simulation import SimulationScheduler, create_initial_world
 def test_same_seed_initial_state_and_intents_are_deterministic() -> None:
     initial = create_initial_world()
     intents = (
+        ActionIntent("rhea-vale", ActionKind.MOVE, target_location_id="mossreach-terraces"),
         ActionIntent("rhea-vale", ActionKind.MOVE, target_location_id="mossreach"),
         ActionIntent("rhea-vale", ActionKind.GATHER),
         ActionIntent("tovin-reed", ActionKind.REST),
         ActionIntent("sable-quill", ActionKind.WAIT),
+        ActionIntent("rhea-vale", ActionKind.MOVE, target_location_id="mossreach-terraces"),
         ActionIntent("rhea-vale", ActionKind.MOVE, target_location_id="emberfall"),
         ActionIntent("rhea-vale", ActionKind.TRADE, quantity=1),
     )
@@ -28,8 +30,10 @@ def test_same_seed_initial_state_and_intents_are_deterministic() -> None:
 
 def test_many_seeded_runs_preserve_stat_and_wealth_invariants() -> None:
     intents = (
+        ActionIntent("rhea-vale", ActionKind.MOVE, target_location_id="mossreach-terraces"),
         ActionIntent("rhea-vale", ActionKind.MOVE, target_location_id="mossreach"),
         *(ActionIntent("rhea-vale", ActionKind.GATHER) for _ in range(25)),
+        ActionIntent("rhea-vale", ActionKind.MOVE, target_location_id="mossreach-terraces"),
         ActionIntent("rhea-vale", ActionKind.MOVE, target_location_id="emberfall"),
         ActionIntent("rhea-vale", ActionKind.TRADE, quantity=10_000),
         *(ActionIntent("tovin-reed", ActionKind.REST) for _ in range(25)),

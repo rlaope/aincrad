@@ -51,7 +51,9 @@ def _adventurer(adventurer_id: str, *, alive: bool = True) -> Adventurer:
 def _world(*, members: tuple[str, ...] = ("hero",), cap: int = 3) -> WorldState:
     return WorldState(
         tick=4,
-        locations={"hall": Location("hall", "Hall", LocationKind.TOWN)},
+        locations={
+            "hall": Location("hall", "Hall", LocationKind.TOWN, "test-region", "town-hall")
+        },
         adventurers={
             "hero": _adventurer("hero"),
             "rhea": _adventurer("rhea"),

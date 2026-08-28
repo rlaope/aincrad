@@ -12,6 +12,7 @@ from aincrad.cli import (
 )
 from aincrad.domain import ActionIntent, ActionKind, ActionSucceeded, CharacterClass
 from aincrad.domain.identity import HERO_ID
+from aincrad.domain.rules import apply_intent
 from aincrad.simulation import create_initial_world
 from aincrad.tui.localization import location_description_ko, location_name_ko
 
@@ -31,7 +32,9 @@ def test_every_runtime_location_has_a_korean_display_name() -> None:
         "emberfall-quest-hall": "길잡이 회관",
         "emberfall-plaza": "빛결 광장",
         "emberfall-tavern": "구리 혜성 주점",
+        "mossreach-terraces": "이끼자락 층계",
         "mossreach": "이끼자락 황야",
+        "mossreach-vaultgate": "금고 어귀 절벽",
         "vault-1": "메아리 회랑",
         "vault-2": "물에 잠긴 기록보관소",
         "vault-3": "밤유리 둑길",
@@ -67,7 +70,7 @@ def test_every_runtime_location_has_public_korean_physical_context() -> None:
 
 def test_action_and_status_projection_use_korean_location_names() -> None:
     world = _starting_world(CharacterClass.WARRIOR, "유리별")
-    move = ActionIntent(HERO_ID, ActionKind.MOVE, target_location_id="mossreach")
+    move = ActionIntent(HERO_ID, ActionKind.MOVE, target_location_id="mossreach-terraces")
 
     result = _run_hours(
         world,
@@ -78,32 +81,29 @@ def test_action_and_status_projection_use_korean_location_names() -> None:
     )
     context = _continue_context(result.final_state, result.traces[-1], width=80)
 
-    assert _intent_label(move, world) == "이동 → 이끼자락 황야"
-    assert _intent_description(move, world).startswith("이끼자락 황야에서")
+    assert _intent_label(move, world) == "이동 → 이끼자락 층계"
+    assert _intent_description(move, world).startswith("이끼자락 층계에서")
     assert context[0].startswith("1일차 01:00 · 잿불마을")
     assert not any("Emberfall" in line or "Mossreach" in line for line in context)
 
 
 def test_headless_event_projection_hides_internal_location_and_detail_keys() -> None:
     world = _starting_world(CharacterClass.WARRIOR, "한별")
-    result = _run_hours(
+    result, events = apply_intent(
         world,
-        seed=42,
-        hours=1,
-        chooser=lambda _world, actor_id: ActionIntent(
-            actor_id,
-            ActionKind.MOVE,
-            target_location_id="emberfall-inn",
+        ActionIntent(
+            HERO_ID,
+            ActionKind.BROWSE_GOODS,
+            target_location_id="emberfall-shop",
         ),
-        direct_hero_only=True,
     )
 
-    message = _event_view(result.events[0], result.final_state).message
+    message = _event_view(events[0], result).message
 
-    assert "한별: 고요한 심지 여관으로 이동했다." in message
+    assert "한별: 자리를 지키며 주변을 살폈다." in message
     assert "경험치" not in message
     assert "destination=" not in message
-    assert "emberfall-inn" not in message
+    assert "emberfall-shop" not in message
     assert "xp_awarded" not in message
 
 

@@ -24,11 +24,14 @@ def _write_rehashed_single_tick_log(
 
 def test_observed_quest_path_recruits_existing_fixture_candidate() -> None:
     route = {
-        0: ActionIntent(HERO_ID, ActionKind.MOVE, target_location_id="emberfall-quest-hall"),
+        0: ActionIntent(
+            HERO_ID, ActionKind.LIST_CONTRACTS, target_location_id="emberfall-quest-hall"
+        ),
         1: ActionIntent(HERO_ID, ActionKind.MOVE, target_location_id="emberfall"),
-        2: ActionIntent(HERO_ID, ActionKind.MOVE, target_location_id="mossreach"),
-        3: ActionIntent(HERO_ID, ActionKind.GATHER),
-        4: ActionIntent(HERO_ID, ActionKind.WAIT),
+        2: ActionIntent(HERO_ID, ActionKind.MOVE, target_location_id="mossreach-terraces"),
+        3: ActionIntent(HERO_ID, ActionKind.MOVE, target_location_id="mossreach"),
+        4: ActionIntent(HERO_ID, ActionKind.GATHER),
+        5: ActionIntent(HERO_ID, ActionKind.WAIT),
     }
 
     def choose(world, actor_id: str) -> ControlledAction:
@@ -37,7 +40,7 @@ def test_observed_quest_path_recruits_existing_fixture_candidate() -> None:
     result = _run_hours(
         _starting_world(CharacterClass.WARRIOR, "별"),
         seed=8,
-        hours=5,
+        hours=6,
         chooser=choose,
         direct_hero_only=True,
     )

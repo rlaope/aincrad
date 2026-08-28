@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unicodedata
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -44,6 +45,7 @@ from aincrad.domain import (
     Adventurer,
     CharacterClass,
     DomainEvent,
+    EdgeKind,
     FacilityInteraction,
     InteractionPrompt,
     InteractionSelection,
@@ -108,6 +110,8 @@ from aincrad.tui.localization import (
     location_description_ko,
     location_direction_ko,
     location_name_ko,
+    region_name_ko,
+    terrain_name_ko,
 )
 from aincrad.tui.menu import MenuController, MenuOutcome
 from aincrad.tui.narrative import (
@@ -137,15 +141,16 @@ Runner = Callable[..., SimulationResult]
 ReplayRunner = Callable[..., SimulationResult]
 CommentaryProvider = Callable[[MovementCommentaryRequest], MovementCommentaryResult]
 StoryProvider = Callable[[TurnStoryRequest], TurnStoryResult]
-_CURRENT_SCHEMA_VERSION = 6
-_CURRENT_RULES_VERSION = 5
-_VERSIONED_RULES_VERSIONS = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
+_CURRENT_SCHEMA_VERSION = 7
+_CURRENT_RULES_VERSION = 6
+_VERSIONED_RULES_VERSIONS = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6}
 _VERSIONED_CONTENT_REVISIONS = {
     2: "rules-v2",
     3: "rules-v2",
     4: "rules-v3",
     5: "rules-v4",
-    6: "current",
+    6: "rules-v5",
+    7: "current",
 }
 
 
@@ -212,6 +217,7 @@ _OBJECTIVE_RELATIONSHIP_DELTA = 5
 _AI_CHOICE = object()
 _MOVE_CHOICE = object()
 _OTHER_DESTINATIONS = object()
+_MAP_CHOICE = object()
 _DIRECT_TEXT_CHOICE = object()
 _ACTION_LABELS = {
     "move": "이동",
@@ -590,6 +596,69 @@ def _identity_labels_ko(profile: CharacterIdentityProfile) -> tuple[str, ...]:
     )
 
 
+def _travel_map_lines(world: WorldState, actor_id: str) -> tuple[str, ...]:
+    """Project a static, non-mutating distance map over public travel edges."""
+
+    actor = world.adventurers[actor_id]
+    current = world.locations[actor.location_id]
+    start = current
+    if current.services:
+        scene_edges = tuple(edge for edge in current.edges if edge.kind is EdgeKind.SCENE)
+        if len(scene_edges) == 1:
+            start = world.locations[scene_edges[0].to]
+
+    distances = {start.id: 0}
+    first_steps: dict[str, str] = {}
+    queue = deque((start.id,))
+    while queue:
+        source_id = queue.popleft()
+        source = world.locations[source_id]
+        for edge in source.edges:
+            if edge.kind is EdgeKind.SCENE or edge.to in distances:
+                continue
+            distances[edge.to] = distances[source_id] + 1
+            first_steps[edge.to] = (
+                edge.to if source_id == start.id else first_steps[source_id]
+            )
+            queue.append(edge.to)
+
+    lines = [
+        f"현재 위치: {location_name_ko(current.id)}",
+        "이동은 이어진 길로만 가능합니다 · 한 번에 한 시간씩",
+        "",
+    ]
+    for location_id in sorted(
+        distances,
+        key=lambda candidate: (distances[candidate], candidate),
+    ):
+        location = world.locations[location_id]
+        if location_id == current.id:
+            suffix = "● 현재 위치"
+        elif distances[location_id] == 0:
+            suffix = "마을 안 · 시설에서 나가는 길"
+        elif distances[location_id] == 1:
+            suffix = "1시간 · 바로 이동 가능"
+        else:
+            waypoint = location_name_ko(first_steps[location_id])
+            suffix = f"{distances[location_id]}시간 · {waypoint} 경유"
+        lines.append(
+            f"{location_name_ko(location_id)} · {terrain_name_ko(location.terrain)} · {suffix}"
+        )
+    lines.extend(("", "원거리 위치는 지도에서만 확인할 수 있으며 바로 선택할 수 없습니다."))
+    return tuple(lines)
+
+
+def _movement_option_description(
+    world: WorldState, actor_id: str, destination_id: str
+) -> str:
+    source = world.locations[world.adventurers[actor_id].location_id]
+    edge = next(edge for edge in source.edges if edge.to == destination_id)
+    destination = world.locations[destination_id]
+    return (
+        f"{terrain_name_ko(destination.terrain)} · 한 시간 거리 · {edge.path_ko}"
+    )
+
+
 def _movement_commentary_request(
     world: WorldState,
     actor_id: str,
@@ -604,9 +673,19 @@ def _movement_commentary_request(
             name_ko=location_name_ko(destination_id),
             description_ko=location_description_ko(destination_id),
             order=index,
+            terrain_ko=terrain_name_ko(world.locations[destination_id].terrain),
+            region_ko=region_name_ko(world.locations[destination_id].region),
+            path_ko=next(
+                edge.path_ko for edge in location.edges if edge.to == destination_id
+            ),
+            steps=1,
         )
         for index, destination_id in enumerate(
-            sorted(destination_ids if destination_ids is not None else location.connections)
+            sorted(
+                destination_ids
+                if destination_ids is not None
+                else tuple(edge.to for edge in location.edges if edge.kind.value != "scene")
+            )
         )
     )
     return MovementCommentaryRequest(
@@ -636,6 +715,7 @@ def _prompt_for_movement_textual(
             for intent in _available_intents(world, actor_id)
             if intent.action is ActionKind.MOVE
         )
+    location = world.locations[world.adventurers[actor_id].location_id]
     by_destination = {
         intent.target_location_id: intent
         for intent in move_intents
@@ -661,19 +741,32 @@ def _prompt_for_movement_textual(
         )
         for recommendation in commentary.recommendations
     )
-    selected = interaction.choose(
-        "이동할 곳",
-        recommendation_options
-        + (
-            MenuOption[object](
-                "기타 목적지",
-                "연결된 모든 목적지를 확인합니다",
-                _OTHER_DESTINATIONS,
+    while True:
+        selected = interaction.choose(
+            "이동할 곳",
+            recommendation_options
+            + (
+                MenuOption[object](
+                    "지도 보기",
+                    "전체 정적 지도에서 거리와 첫 경유지를 확인합니다",
+                    _MAP_CHOICE,
+                ),
+                MenuOption[object](
+                    "기타 목적지",
+                    "현재 위치에 인접한 목적지를 확인합니다",
+                    _OTHER_DESTINATIONS,
+                ),
             ),
-        ),
-        subtitle="해설을 읽고 다음 한 시간을 보낼 목적지를 고르세요",
-        allow_back=True,
-    )
+            subtitle=(
+                f"현재: {location_name_ko(location.id)} · "
+                f"{terrain_name_ko(location.terrain)} · {region_name_ko(location.region)} · "
+                "한 번에 인접 구간 1곳만 이동할 수 있습니다"
+            ),
+            allow_back=True,
+        )
+        if selected is not _MAP_CHOICE:
+            break
+        interaction.show_text("유리 국경 지도", _travel_map_lines(world, actor_id))
     if selected is None:
         raise EOFError("이동 선택이 취소되었습니다")
     if selected is _OTHER_DESTINATIONS:
@@ -682,12 +775,14 @@ def _prompt_for_movement_textual(
             tuple(
                 MenuOption[object](
                     location_name_ko(intent.target_location_id or ""),
-                    location_description_ko(intent.target_location_id or ""),
+                    _movement_option_description(
+                        world, actor_id, intent.target_location_id or ""
+                    ),
                     intent,
                 )
                 for intent in move_intents
             ),
-            subtitle="현재 위치와 직접 이어진 길만 표시합니다",
+            subtitle="현재 위치와 직접 이어진 인접 구간만 표시합니다",
             allow_back=True,
         )
         if selected is None:
@@ -916,7 +1011,10 @@ def _prompt_for_facility_intent_menu(
         stdout=stdout,
         allow_back=True,
         frame_writer=frame_writer,
-        subtitle="이 시설에서 보낼 다음 한 시간의 행동이나 부탁을 고르세요",
+        subtitle=(
+            "마을 안 시설은 바로 들르며 시간은 선택한 행동에만 흐릅니다 · "
+            "다음 행동이나 부탁을 고르세요"
+        ),
         context=context,
         width=_screen_width(),
     )
@@ -945,23 +1043,46 @@ def _prompt_for_movement_menu(
     frame_writer: Callable[[str], None] | None,
     move_intents: tuple[ActionIntent, ...],
 ) -> ControlledAction:
-    selected = _select_menu(
-        "이동할 곳",
-        tuple(
-            MenuChoice(
-                location_name_ko(intent.target_location_id or ""),
-                location_description_ko(intent.target_location_id or ""),
-            )
-            for intent in move_intents
+    location = world.locations[world.adventurers[actor_id].location_id]
+    choices = tuple(
+        MenuChoice(
+            location_name_ko(intent.target_location_id or ""),
+            _movement_option_description(
+                world, actor_id, intent.target_location_id or ""
+            ),
+        )
+        for intent in move_intents
+    ) + (
+        MenuChoice(
+            "지도 보기",
+            "전체 정적 지도에서 거리와 첫 경유지를 확인합니다",
         ),
-        move_intents,
-        key_reader=key_reader,
-        stdout=stdout,
-        allow_back=True,
-        frame_writer=frame_writer,
-        subtitle="현재 위치와 직접 이어진 길만 표시합니다",
-        width=_screen_width(),
     )
+    while True:
+        selected = _select_menu(
+            "이동할 곳",
+            choices,
+            (*move_intents, _MAP_CHOICE),
+            key_reader=key_reader,
+            stdout=stdout,
+            allow_back=True,
+            frame_writer=frame_writer,
+            subtitle=(
+                f"현재: {location_name_ko(location.id)} · "
+                f"{terrain_name_ko(location.terrain)} · {region_name_ko(location.region)} · "
+                "인접 구간 1곳만 이동"
+            ),
+            width=_screen_width(),
+        )
+        if selected is not _MAP_CHOICE:
+            break
+        _show_text_screen(
+            "유리 국경 지도",
+            _travel_map_lines(world, actor_id),
+            key_reader=key_reader,
+            stdout=stdout,
+            frame_writer=frame_writer,
+        )
     if selected is None:
         return _prompt_for_intent_menu(
             world,
@@ -1168,7 +1289,10 @@ def _prompt_for_facility_intent_textual(
             )
             for incident in facility_interactions
         ),
-        subtitle="이 시설에서 보낼 다음 한 시간의 행동이나 부탁을 고르세요",
+        subtitle=(
+            "마을 안 시설은 바로 들르며 시간은 선택한 행동에만 흐릅니다 · "
+            "다음 행동이나 부탁을 고르세요"
+        ),
         context=context,
         allow_back=True,
     )
@@ -1557,7 +1681,9 @@ def _event_message(event: DomainEvent, world: WorldState) -> str:
             "unknown_adventurer": "그 모험가를 찾을 수 없었다",
             "adventurer_dead": "이미 쓰러져 행동할 수 없었다",
             "unknown_location": "목적지를 찾을 수 없었다",
+            "invalid_target_location": "목적지 정보가 올바르지 않았다",
             "location_not_connected": "이어진 길이 없었다",
+            "scene_edge_not_travel": "마을 시설은 시설 행동을 골라 들어가야 했다",
             "gather_not_allowed": "이곳에서는 채집할 수 없었다",
             "invalid_gather_yield": "채집 결과가 올바르지 않았다",
             "trade_not_allowed": "이곳에서는 거래할 수 없었다",
@@ -1855,10 +1981,37 @@ def _world_digest(world: WorldState) -> str:
     return hashlib.sha256(canonical_json(world).encode("utf-8")).hexdigest()
 
 
+def _pre_v7_world_payload(world: WorldState) -> dict[str, object]:
+    """Project geographic locations back to the pre-schema7 serialized shape."""
+
+    payload = to_json_value(world)
+    if not isinstance(payload, dict):
+        raise ValueError("legacy world payload must be an object")
+    locations = payload.get("locations")
+    if not isinstance(locations, dict):
+        raise ValueError("legacy world locations must be an object")
+    for raw_location in locations.values():
+        if not isinstance(raw_location, dict):
+            raise ValueError("legacy location must be an object")
+        raw_edges = raw_location.pop("edges", None)
+        if not isinstance(raw_edges, list) or any(
+            not isinstance(edge, dict) or type(edge.get("to")) is not str for edge in raw_edges
+        ):
+            raise ValueError("legacy location edges must be canonical")
+        raw_location["connections"] = [edge["to"] for edge in raw_edges]
+        raw_location.pop("region", None)
+        raw_location.pop("terrain", None)
+    return payload
+
+
+def _pre_v7_world_digest(world: WorldState) -> str:
+    return hashlib.sha256(canonical_json(_pre_v7_world_payload(world)).encode("utf-8")).hexdigest()
+
+
 def _pre_v6_world_digest(world: WorldState) -> str:
     """Hash legacy worlds through the Location shape committed before incidents."""
 
-    payload = to_json_value(world)
+    payload = _pre_v7_world_payload(world)
     locations = payload.get("locations")
     if not isinstance(locations, dict):
         raise ValueError("legacy world locations must be an object")
@@ -1876,7 +2029,6 @@ def _legacy_v2_world(world: WorldState) -> WorldState:
         location_id: replace(
             location,
             description="",
-            services=(),
             contextual_actions=(),
         )
         for location_id, location in world.locations.items()
@@ -1895,7 +2047,7 @@ def _legacy_v2_world(world: WorldState) -> WorldState:
 def _legacy_v2_world_digest(world: WorldState) -> str:
     """Hash a world through the exact Location field set committed by v2."""
 
-    payload = to_json_value(world)
+    payload = _pre_v7_world_payload(world)
     locations = payload.get("locations")
     if not isinstance(locations, dict):
         raise ValueError("legacy v2 world locations must be an object")
@@ -2526,7 +2678,7 @@ def _strict_replay_versioned(
         "final_tick",
         "final_world_digest",
     }
-    if expected_version in {3, 4, 5, 6}:
+    if expected_version in {3, 4, 5, 6, 7}:
         init_keys.add("identity")
     if not isinstance(init, dict) or set(init) != init_keys:
         raise ValueError("invalid versioned run initialization")
@@ -2548,7 +2700,7 @@ def _strict_replay_versioned(
         or len(init["final_world_digest"]) != 64
     ):
         raise ValueError("unsupported versioned run initialization")
-    if expected_version in {3, 4, 5, 6}:
+    if expected_version in {3, 4, 5, 6, 7}:
         identity = init["identity"]
         if not isinstance(identity, dict):
             raise ValueError("versioned run identity must be an object")
@@ -2598,6 +2750,7 @@ def _strict_replay_versioned(
     scheduler = SimulationScheduler(
         seed=seed,
         legacy_all_actions_award_xp=expected_version == 2,
+        legacy_connection_moves=expected_version <= 6,
     )
     all_events: list[DomainEvent] = []
     for record in tick_records:
@@ -2635,7 +2788,7 @@ def _strict_replay_versioned(
                 "controller",
                 "reason_code",
             }
-            if expected_version == 6:
+            if expected_version in {6, 7}:
                 proposal_keys.add("interaction")
             if not isinstance(raw, dict) or set(raw) != proposal_keys:
                 raise ValueError(f"record {record.seq} has an invalid proposal")
@@ -2651,7 +2804,7 @@ def _strict_replay_versioned(
             ):
                 raise ValueError(f"record {record.seq} has invalid proposal fields")
             interaction = None
-            if expected_version == 6:
+            if expected_version in {6, 7}:
                 raw_interaction = raw["interaction"]
                 if raw_interaction is not None:
                     if (
@@ -2690,7 +2843,7 @@ def _strict_replay_versioned(
                     ("baseline_policy", "policy.baseline"),
                 }
                 if (
-                    expected_version == 6
+                    expected_version in {6, 7}
                     and controlled.intent.action is ActionKind.ENGAGE_INCIDENT
                     and interaction is not None
                 ):
@@ -2812,6 +2965,8 @@ def _strict_replay_versioned(
         if expected_version == 2
         else _pre_v6_world_digest(world)
         if expected_version <= 5
+        else _pre_v7_world_digest(world)
+        if expected_version == 6
         else _world_digest(world)
     )
     if world.tick != init["final_tick"] or digest != init["final_world_digest"]:
@@ -2833,7 +2988,7 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
         and records[0].event.get("record_type") == "run_init"
     ):
         schema_version = records[0].event.get("schema_version")
-        if type(schema_version) is not int or schema_version not in {2, 3, 4, 5, 6}:
+        if type(schema_version) is not int or schema_version not in {2, 3, 4, 5, 6, 7}:
             raise ValueError("unsupported versioned run initialization")
         return _strict_replay_versioned(
             records,

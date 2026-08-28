@@ -138,6 +138,36 @@ def _connections(place: Mapping[str, object], field: str) -> list[str]:
     return [_text(item, f"{field}.connections entry") for item in value]
 
 
+def _edge_targets(
+    place: Mapping[str, object], field: str, *, legacy_connections: bool
+) -> list[str]:
+    if legacy_connections:
+        return _connections(place, field)
+    if "connections" in place:
+        raise FixtureSchemaError(f"{field} must not contain legacy connections")
+    _text(place.get("region"), f"{field}.region")
+    _text(place.get("terrain"), f"{field}.terrain")
+    raw_edges = place.get("edges")
+    if not isinstance(raw_edges, list):
+        raise FixtureSchemaError(f"{field}.edges must be a list")
+    targets: list[str] = []
+    for edge in raw_edges:
+        edge_object = _object(edge, f"{field}.edge")
+        if set(edge_object) != {"to", "kind", "path_ko"}:
+            raise FixtureSchemaError("edge keys must be exact")
+        target = _text(edge_object["to"], f"{field}.edge.to")
+        kind = edge_object["kind"]
+        if type(kind) is not str or kind not in {"scene", "overland", "dungeon_gate", "dungeon"}:
+            raise FixtureSchemaError(f"{field}.edge.kind must be a supported string")
+        path_ko = _text(edge_object["path_ko"], f"{field}.edge.path_ko")
+        if len(path_ko) > 120 or re.search("[가-힣]", path_ko) is None:
+            raise FixtureSchemaError(f"{field}.edge.path_ko must be bounded Korean text")
+        targets.append(target)
+    if len(targets) != len(set(targets)):
+        raise FixtureSchemaError(f"{field}.edges cannot repeat targets")
+    return targets
+
+
 def _integer(value: object, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise FixtureSchemaError(f"{field} must be an integer")
@@ -199,6 +229,7 @@ def _validate_facilities(
     *,
     expected_kinds_for: Callable[[str], tuple[str, ...]] | None,
     expected_facility_services: Mapping[str, tuple[str, ...]] | None,
+    legacy_connections: bool,
 ) -> list[Mapping[str, object]]:
     facilities = _objects(town.get("facilities"), "town.facilities")
     expected_kinds: set[str] = {"shop", "inn", "quest_hall", "plaza", "tavern"}
@@ -226,12 +257,17 @@ def _validate_facilities(
         )
         if action_services != services:
             raise FixtureSchemaError(f"facility {facility_id} actions must cover its services")
-        _connections(facility, f"facility {facility_id}")
+        _edge_targets(
+            facility, f"facility {facility_id}", legacy_connections=legacy_connections
+        )
     return facilities
 
 
 def _validate_dungeon(
-    dungeon: Mapping[str, object], *, expected_kinds_for: Callable[[str], tuple[str, ...]] | None
+    dungeon: Mapping[str, object],
+    *,
+    expected_kinds_for: Callable[[str], tuple[str, ...]] | None,
+    legacy_connections: bool,
 ) -> list[Mapping[str, object]]:
     floors = _objects(dungeon.get("floors"), "dungeon.floors")
     depths = [item.get("depth") for item in floors]
@@ -241,7 +277,9 @@ def _validate_dungeon(
         floor_id = _text(floor.get("id"), "dungeon floor.id")
         _text(floor.get("description"), f"dungeon floor {floor_id}.description")
         _validate_actions(floor, "dungeon floor", expected_kinds_for=expected_kinds_for)
-        _connections(floor, f"dungeon floor {floor_id}")
+        _edge_targets(
+            floor, f"dungeon floor {floor_id}", legacy_connections=legacy_connections
+        )
     if any(floor.get("kind") != "dungeon_floor" for floor in floors[:-1]):
         raise FixtureSchemaError("dungeon depths 1 through 9 must be dungeon_floor")
     boss = floors[-1]
@@ -355,6 +393,7 @@ def validate_world_fixture(
     *,
     expected_kinds_for: Callable[[str], tuple[str, ...]] | None = None,
     expected_facility_services: Mapping[str, tuple[str, ...]] | None = None,
+    legacy_connections: bool = False,
 ) -> WorldFixture:
     root = _object(world, "world fixture root")
     required = {
@@ -382,8 +421,8 @@ def validate_world_fixture(
     dungeons = _objects(root["dungeons"], "dungeons")
     adventurers = _objects(root["adventurers"], "adventurers")
     npcs = _objects(root["npcs"], "npcs")
-    if len(towns) != 1 or len(grounds) != 1:
-        raise FixtureSchemaError("fixture requires exactly one town and one hunting ground")
+    if len(towns) != 1 or len(grounds) != (1 if legacy_connections else 3):
+        raise FixtureSchemaError("fixture has an invalid hunting-ground count")
     if towns[0].get("id") != "emberfall":
         raise FixtureSchemaError("fixture town must be Emberfall")
     if len(dungeons) != 1 or dungeons[0].get("id") != "starless-vault":
@@ -395,8 +434,13 @@ def validate_world_fixture(
         towns[0],
         expected_kinds_for=expected_kinds_for,
         expected_facility_services=expected_facility_services,
+        legacy_connections=legacy_connections,
     )
-    floors = _validate_dungeon(dungeons[0], expected_kinds_for=expected_kinds_for)
+    floors = _validate_dungeon(
+        dungeons[0],
+        expected_kinds_for=expected_kinds_for,
+        legacy_connections=legacy_connections,
+    )
     _validate_actions(towns[0], "town", expected_kinds_for=expected_kinds_for)
     for ground in grounds:
         ground_id = _text(ground.get("id"), "hunting ground.id")
@@ -407,14 +451,63 @@ def validate_world_fixture(
     known_locations = set(location_ids)
     for place in places:
         place_id = cast(str, place["id"])
-        unknown = set(_connections(place, f"location {place_id}")) - known_locations
+        unknown = set(
+            _edge_targets(place, f"location {place_id}", legacy_connections=legacy_connections)
+        ) - known_locations
         if unknown:
             unknown_id = sorted(unknown)[0]
             raise FixtureSchemaError(f"location {place_id} has unknown connection: {unknown_id}")
+    if not legacy_connections:
+        place_by_id = {cast(str, place["id"]): place for place in places}
+        edge_maps = {
+            location_id: {
+                cast(str, edge["to"]): cast(str, edge["kind"])
+                for edge in _objects(place["edges"], f"location {location_id}.edges")
+            }
+            for location_id, place in place_by_id.items()
+        }
+        for source_id, targets in edge_maps.items():
+            if source_id in targets:
+                raise FixtureSchemaError(f"location {source_id} has a self edge")
+            for target_id, kind in targets.items():
+                reverse_kind = edge_maps[target_id].get(source_id)
+                if reverse_kind is None:
+                    raise FixtureSchemaError(
+                        f"location edge {source_id}->{target_id} must be reciprocal"
+                    )
+                if reverse_kind != kind:
+                    raise FixtureSchemaError(
+                        f"location edge {source_id}<->{target_id} kind must match"
+                    )
+        facility_ids = {cast(str, facility["id"]) for facility in facilities}
+        for facility_id in facility_ids:
+            if edge_maps[facility_id] != {"emberfall": "scene"}:
+                raise FixtureSchemaError(
+                    f"facility {facility_id} must have one scene edge to Emberfall"
+                )
+            if edge_maps["emberfall"].get(facility_id) != "scene":
+                raise FixtureSchemaError(
+                    f"Emberfall must have a scene edge to facility {facility_id}"
+                )
+        reachable = {"emberfall"}
+        pending = ["emberfall"]
+        while pending:
+            source_id = pending.pop()
+            for target_id in edge_maps[source_id]:
+                if target_id not in reachable:
+                    reachable.add(target_id)
+                    pending.append(target_id)
+        if reachable != known_locations:
+            orphan = sorted(known_locations - reachable)[0]
+            raise FixtureSchemaError(f"location graph has unreachable node: {orphan}")
     for current, following in zip(floors, floors[1:], strict=False):
-        if following["id"] not in _connections(current, f"floor {current['id']}"):
+        if following["id"] not in _edge_targets(
+            current, f"floor {current['id']}", legacy_connections=legacy_connections
+        ):
             raise FixtureSchemaError("dungeon floor connections must link each depth forward")
-        if current["id"] not in _connections(following, f"floor {following['id']}"):
+        if current["id"] not in _edge_targets(
+            following, f"floor {following['id']}", legacy_connections=legacy_connections
+        ):
             raise FixtureSchemaError("dungeon floor connections must link each depth backward")
 
     _unique_ids(adventurers, "adventurer")
@@ -448,6 +541,7 @@ def load_world_fixture(
     *,
     expected_kinds_for: Callable[[str], tuple[str, ...]] | None = None,
     expected_facility_services: Mapping[str, tuple[str, ...]] | None = None,
+    legacy_connections: bool = False,
 ) -> LoadedWorldFixture:
     try:
         with Path(path).open(encoding="utf-8") as stream:
@@ -458,6 +552,7 @@ def load_world_fixture(
         raw,
         expected_kinds_for=expected_kinds_for,
         expected_facility_services=expected_facility_services,
+        legacy_connections=legacy_connections,
     )
     result = cast(LoadedWorldFixture, dict(world))
     result["location_ids"] = tuple(
@@ -536,6 +631,7 @@ _PACKAGED_WORLD_RESOURCES: Mapping[str, str] = {
     "rules-v2": "glassfrontier_world_rules_v2.json",
     "rules-v3": "glassfrontier_world_rules_v3.json",
     "rules-v4": "glassfrontier_world_rules_v4.json",
+    "rules-v5": "glassfrontier_world_rules_v5.json",
 }
 
 
@@ -554,14 +650,15 @@ def load_packaged_world_fixture(*, revision: str = "current") -> LoadedWorldFixt
                 _rules_v2_expected_action_kinds
                 if revision == "rules-v2"
                 else _rules_v3_expected_action_kinds
-                if revision in {"rules-v3", "rules-v4"}
+                if revision in {"rules-v3", "rules-v4", "rules-v5"}
                 else None
             ),
             expected_facility_services=(
                 _RULES_V2_FACILITY_SERVICES
                 if revision == "rules-v2"
                 else _RULES_V3_FACILITY_SERVICES
-                if revision in {"rules-v3", "rules-v4"}
+                if revision in {"rules-v3", "rules-v4", "rules-v5"}
                 else None
             ),
+            legacy_connections=revision != "current",
         )

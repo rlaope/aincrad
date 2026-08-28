@@ -11,9 +11,11 @@ from aincrad.domain import (
     Activity,
     Adventurer,
     DomainEvent,
+    EdgeKind,
     Location,
     LocationKind,
     Stats,
+    TravelEdge,
     WorldState,
 )
 from aincrad.domain.rules import apply_intent
@@ -46,8 +48,14 @@ def make_world() -> WorldState:
     return WorldState(
         tick=0,
         locations={
-            "town": Location("town", "Town", LocationKind.TOWN, ("field",)),
-            "field": Location("field", "Field", LocationKind.HUNTING_GROUND, ("town",)),
+            "town": Location(
+                "town", "Town", LocationKind.TOWN, "test-region", "town-road",
+                (TravelEdge("field", EdgeKind.OVERLAND, "동쪽 길"),),
+            ),
+            "field": Location(
+                "field", "Field", LocationKind.HUNTING_GROUND, "test-region", "field-road",
+                (TravelEdge("town", EdgeKind.OVERLAND, "서쪽 길"),),
+            ),
         },
         adventurers={
             "mira": Adventurer(
@@ -80,7 +88,7 @@ def test_move_changes_location_and_emits_success_event() -> None:
             next_tick=1,
             target_location_id="field",
             quantity=1,
-            details=(("destination", "field"),),
+            details=(("destination", "field"), ("edge_kind", "overland")),
         ),
     )
     assert world.adventurers["mira"].location_id == "town"
@@ -515,13 +523,17 @@ def test_hidden_facility_target_is_rejected_without_location_or_economy_mutation
     world = create_initial_world()
     town = replace(
         world.locations["emberfall"],
-        connections=tuple(
-            location_id
-            for location_id in world.locations["emberfall"].connections
-            if location_id != "emberfall-shop"
+        edges=tuple(
+            edge for edge in world.locations["emberfall"].edges if edge.to != "emberfall-shop"
         ),
     )
-    world = replace(world, locations={**world.locations, town.id: town})
+    shop = replace(
+        world.locations["emberfall-shop"],
+        edges=tuple(
+            edge for edge in world.locations["emberfall-shop"].edges if edge.to != "emberfall"
+        ),
+    )
+    world = replace(world, locations={**world.locations, town.id: town, shop.id: shop})
     actor = world.adventurers["rhea-vale"]
 
     next_world, events = apply_intent(

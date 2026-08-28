@@ -5,6 +5,7 @@ from .models import (
     Activity,
     Adventurer,
     CharacterClass,
+    EdgeKind,
     FacilityInteraction,
     InteractionPrompt,
     InteractionResponse,
@@ -14,6 +15,7 @@ from .models import (
     PartyState,
     Stats,
     TerminalEffect,
+    TravelEdge,
     WorldState,
 )
 from .story import (
@@ -37,6 +39,7 @@ __all__ = [
     "Activity",
     "Adventurer",
     "CharacterClass",
+    "EdgeKind",
     "FacilityInteraction",
     "InteractionPrompt",
     "InteractionResponse",
@@ -47,6 +50,7 @@ __all__ = [
     "PartyState",
     "Stats",
     "TerminalEffect",
+    "TravelEdge",
     "STORY_INTENT_VERSION",
     "StoryCharacterView",
     "StoryIntent",

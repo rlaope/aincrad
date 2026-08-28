@@ -64,7 +64,7 @@ def test_starting_world_explicitly_selects_a_trusted_content_revision() -> None:
     current = create_initial_world()
     frozen = create_initial_world(content_revision="rules-v2")
 
-    assert tuple(current.locations) == tuple(frozen.locations)
+    assert set(frozen.locations).issubset(current.locations)
     with pytest.raises(ValueError, match="unsupported content revision"):
         create_initial_world(content_revision="rules-v2/../../outside")
 
@@ -111,6 +111,31 @@ def test_schema_v4_rules_v3_replay_uses_frozen_content_when_current_content_evol
         if revision == "current":
             return evolved
         raise ValueError("unsupported content revision")
+
+    monkeypatch.setattr(scenario_module, "load_packaged_world_fixture", evolved_loader)
+
+    replayed = _default_replay(event_log=fixture_path, verify_hash=True)
+
+    assert replayed.summary.status == "해시 검증 완료"
+
+
+def test_schema_v6_rules_v5_replay_uses_frozen_current_content_when_current_evolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "v6_events_warrior.jsonl"
+    stored = EventLog(fixture_path).verify()
+    assert stored[0].event["schema_version"] == 6
+    assert stored[0].event["rules_version"] == 5
+    frozen = load_packaged_world_fixture(revision="rules-v5")
+    evolved = deepcopy(load_packaged_world_fixture())
+    evolved["towns"][0]["actions"][0]["id"] = "emberfall-observe-evolved"
+
+    def evolved_loader(*, revision: str = "current"):
+        if revision == "rules-v5":
+            return frozen
+        if revision == "current":
+            return evolved
+        return load_packaged_world_fixture(revision=revision)
 
     monkeypatch.setattr(scenario_module, "load_packaged_world_fixture", evolved_loader)
 

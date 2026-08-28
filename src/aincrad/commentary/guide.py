@@ -43,6 +43,10 @@ class DestinationCandidate:
     name_ko: str
     description_ko: str
     order: int
+    terrain_ko: str = ""
+    region_ko: str = ""
+    path_ko: str = ""
+    steps: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +259,10 @@ def _prompt_bytes(request: MovementCommentaryRequest) -> bytes:
                 "destination_id": destination.destination_id,
                 "name_ko": destination.name_ko,
                 "order": destination.order,
+                "path_ko": destination.path_ko,
+                "region_ko": destination.region_ko,
+                "steps": destination.steps,
+                "terrain_ko": destination.terrain_ko,
             }
             for destination in request.destinations
         ],

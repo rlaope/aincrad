@@ -12,6 +12,7 @@ def test_initial_scenario_exposes_the_three_fixture_candidate_adventurers() -> N
     world = create_initial_world()
 
     assert set(world.adventurers) == {"rhea-vale", "tovin-reed", "sable-quill"}
+    assert len(world.locations) == 19
     assert {
         "emberfall",
         "emberfall-shop",
@@ -19,7 +20,9 @@ def test_initial_scenario_exposes_the_three_fixture_candidate_adventurers() -> N
         "emberfall-quest-hall",
         "emberfall-plaza",
         "emberfall-tavern",
+        "mossreach-terraces",
         "mossreach",
+        "mossreach-vaultgate",
     }.issubset(world.locations)
     dungeon = [world.locations[f"vault-{depth}"] for depth in range(1, 11)]
     assert [location.stage for location in dungeon] == list(range(1, 11))

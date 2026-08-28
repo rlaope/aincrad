@@ -10,6 +10,7 @@ from aincrad.domain.models import (
     ActionIntent,
     ActionKind,
     ContextualAction,
+    EdgeKind,
     FacilityInteraction,
     InteractionPrompt,
     InteractionResponse,
@@ -32,6 +33,8 @@ _EXPECTED_ACTION_KINDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "talk_sena",
         ),
         "mossreach": ("hunt", "gather", "scout", "camp"),
+        "mossreach-terraces": ("gather", "scout", "camp"),
+        "mossreach-vaultgate": ("scout", "camp", "observe"),
         **{f"vault-{depth}": ("scout", "search", "fight") for depth in range(1, 10)},
         "vault-10": ("scout", "search", "challenge"),
     }
@@ -191,7 +194,15 @@ def available_facility_interactions(
     actor = world.adventurers.get(adventurer_id)
     if actor is None or facility_id not in world.locations:
         return ()
-    if actor.location_id not in {facility_id, "emberfall"}:
+    edge = next(
+        (
+            candidate
+            for candidate in world.locations[actor.location_id].edges
+            if candidate.to == facility_id
+        ),
+        None,
+    )
+    if actor.location_id != facility_id and (edge is None or edge.kind is not EdgeKind.SCENE):
         return ()
     return world.locations[facility_id].interactions
 
@@ -207,11 +218,19 @@ def contextual_action_for_intent(
     location_id = actor.location_id
     if intent.target_location_id is not None:
         target = world.locations.get(intent.target_location_id)
+        edge = next(
+            (
+                candidate
+                for candidate in world.locations[actor.location_id].edges
+                if candidate.to == intent.target_location_id
+            ),
+            None,
+        )
         if (
-            actor.location_id != "emberfall"
-            or target is None
-            or intent.target_location_id not in world.locations["emberfall"].connections
-            or target.connections != ("emberfall",)
+            target is None
+            or edge is None
+            or edge.kind is not EdgeKind.SCENE
+            or not target.services
         ):
             return None
         location_id = intent.target_location_id
@@ -230,19 +249,16 @@ def available_action_intents(world: WorldState, adventurer_id: str) -> tuple[Act
     if adventurer is None or not adventurer.can_act:
         return ()
     location = world.locations[adventurer.location_id]
-    facility_ids = (
-        tuple(
-            destination
-            for destination in location.connections
-            if world.locations[destination].connections == ("emberfall",)
-        )
-        if adventurer.location_id == "emberfall"
-        else ()
+    facility_ids = tuple(
+        edge.to
+        for edge in location.edges
+        if edge.kind is EdgeKind.SCENE and world.locations[edge.to].services
     )
     moves = tuple(
-        ActionIntent(adventurer_id, ActionKind.MOVE, target_location_id=destination)
-        for destination in location.connections
-        if destination not in facility_ids
+        ActionIntent(adventurer_id, ActionKind.MOVE, target_location_id=edge.to)
+        for edge in location.edges
+        if edge.kind is not EdgeKind.SCENE
+        or (location.services and not world.locations[edge.to].services)
     )
     facility_actions = tuple(
         ActionIntent(adventurer_id, action.kind, target_location_id=facility_id)

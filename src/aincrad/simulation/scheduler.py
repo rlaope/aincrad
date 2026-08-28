@@ -29,6 +29,7 @@ class SimulationResult:
 class SimulationScheduler:
     seed: int
     legacy_all_actions_award_xp: bool = False
+    legacy_connection_moves: bool = False
 
     def run_hour(
         self, initial_state: WorldState, intents: Iterable[ActionIntent]
@@ -65,7 +66,12 @@ class SimulationScheduler:
             )
             gather_yield = random.randint(1, 3) if intent.action is ActionKind.GATHER else 1
             before_action = world
-            world, emitted = apply_intent(world, intent, gather_yield=gather_yield)
+            world, emitted = apply_intent(
+                world,
+                intent,
+                gather_yield=gather_yield,
+                legacy_connection_moves=self.legacy_connection_moves,
+            )
             progressed: list[DomainEvent] = []
             for event in emitted:
                 destination = intent.target_location_id
@@ -114,7 +120,12 @@ class SimulationScheduler:
         events: list[DomainEvent] = []
         for intent in intents:
             gather_yield = random.randint(1, 3) if intent.action is ActionKind.GATHER else 1
-            world, emitted = apply_intent(world, intent, gather_yield=gather_yield)
+            world, emitted = apply_intent(
+                world,
+                intent,
+                gather_yield=gather_yield,
+                legacy_connection_moves=self.legacy_connection_moves,
+            )
             events.extend(emitted)
             clock = clock.advance()
             if any(event.next_tick != clock.tick for event in emitted):

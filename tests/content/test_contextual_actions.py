@@ -60,7 +60,7 @@ def test_available_actions_expose_atomic_facility_engagements_and_connected_rout
 
     town_intents = available_action_intents(world, actor_id)
 
-    assert (ActionKind.MOVE, "mossreach") in {
+    assert (ActionKind.MOVE, "mossreach-terraces") in {
         (intent.action, intent.target_location_id) for intent in town_intents
     }
     assert (ActionKind.OBSERVE, None) in {

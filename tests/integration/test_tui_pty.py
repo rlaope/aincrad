@@ -139,7 +139,7 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         assert "상점 · 잿불창고 교역소" in action
         assert "여관 · 고요한 심지 여관" in action
         os.write(master_fd, b"\r")
-        facility = capture.read_until("이 시설에서 보낼 다음 한 시간의 행동이나 부탁을 고르세요")
+        facility = capture.read_until("행동이나 부탁을 고르세요")
         assert "잿불창고 교역소" in facility
         assert "상품 목록 보기" in facility
         os.write(master_fd, b"\r")
@@ -195,7 +195,7 @@ def test_real_pty_orrin_incident_walk_completes_one_tick_and_replays(tmp_path: P
         os.write(master_fd, "약속을 지키고 기록을 남긴다.\r".encode())
         capture.read_until("재현용사의 행동")
         os.write(master_fd, b"\r")
-        capture.read_until("이 시설에서 보낼 다음 한 시간의 행동이나 부탁을 고르세요")
+        capture.read_until("행동이나 부탁을 고르세요")
         os.write(master_fd, b"ssss\r")
         opening = capture.read_until("상자를 살펴본다")
         assert "상자를 살펴본다" in opening
@@ -236,6 +236,83 @@ def test_real_pty_orrin_incident_walk_completes_one_tick_and_replays(tmp_path: P
     replay = _default_replay(event_log=event_logs[0], verify_hash=True)
     assert replay.summary.status == "해시 검증 완료"
     assert replay.summary.event_count == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX terminal contract")
+def test_real_pty_travels_four_adjacent_edges_to_vault_gate_and_replays(
+    tmp_path: Path,
+) -> None:
+    master_fd, slave_fd = pty.openpty()
+    process = subprocess.Popen(
+        [sys.executable, "-m", "aincrad"],
+        cwd=tmp_path,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        env={**os.environ, "AINCRAD_STORY_MODE": "local"},
+        close_fds=True,
+    )
+    capture = TerminalCapture(master_fd, columns=80, lines=24)
+    route = (
+        "mossreach-terraces",
+        "mossreach",
+        "mossreach-vaultgate",
+        "vault-1",
+    )
+    destination_names = ("이끼자락 층계", "이끼자락 황야", "금고 어귀 절벽", "메아리 회랑")
+    try:
+        capture.read_until("메인 메뉴")
+        os.write(master_fd, b"\r")
+        capture.read_until("직업 선택")
+        os.write(master_fd, b"\r")
+        capture.read_until("주인공 이름")
+        os.write(master_fd, "길손\r".encode())
+        capture.read_until("주인공의 성격")
+        os.write(master_fd, "길을 확인하고 한 구간씩 신중하게 이동한다.\r".encode())
+        capture.read_until("주인공의 특징")
+        os.write(master_fd, "젖은 지형의 발자국과 관문 표식을 기록한다.\r".encode())
+        capture.read_until("다음 한 시간의 행동을 고르세요")
+
+        for index, destination_name in enumerate(destination_names):
+            os.write(master_fd, b"sssss\r" if index == 0 else b"\r")
+            movement = capture.read_until("이동할 수 있습니다")
+            assert "�" not in movement
+            assert destination_name in movement
+            if index == 0:
+                assert "이끼자락 황야" not in movement
+                assert "금고 어귀 절벽" not in movement
+            os.write(master_fd, b"\r" if index == 0 else b"s\r")
+            capture.read_until("한 시간의 이야기")
+            os.write(master_fd, b"\r")
+            capture.read_until("이번 시간")
+            os.write(master_fd, b"\r")
+            if index < len(route) - 1:
+                capture.read_until("여정 계속")
+                os.write(master_fd, b"\r")
+                capture.read_until("다음 한 시간의 행동을 고르세요")
+            else:
+                capture.read_until("메인 메뉴")
+
+        os.write(master_fd, b"sss\r")
+        capture.read_until_bytes(b"\x1b[?1049l")
+        assert process.wait(timeout=8) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        os.close(master_fd)
+        os.close(slave_fd)
+
+    event_logs = list(tmp_path.rglob("*.jsonl"))
+    assert len(event_logs) == 1
+    records = EventLog(event_logs[0]).verify()
+    assert records[0].event["schema_version"] == 7
+    assert tuple(
+        record.event["proposals"][0]["target_location_id"] for record in records[1:-1]
+    ) == route
+    replay = _default_replay(event_log=event_logs[0], verify_hash=True)
+    assert replay.summary.status == "해시 검증 완료"
+    assert replay.summary.event_count == 4
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX terminal contract")

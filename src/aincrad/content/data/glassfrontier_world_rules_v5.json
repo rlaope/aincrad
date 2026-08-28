@@ -8,6 +8,14 @@
       "name": "Emberfall",
       "kind": "town",
       "description": "A lantern-lit settlement built around a warm shard spring.",
+      "connections": [
+        "emberfall-shop",
+        "emberfall-inn",
+        "emberfall-quest-hall",
+        "emberfall-plaza",
+        "emberfall-tavern",
+        "mossreach"
+      ],
       "facilities": [
         {
           "id": "emberfall-shop",
@@ -19,6 +27,9 @@
             "buy_supplies",
             "sell_salvage",
             "talk_orrin"
+          ],
+          "connections": [
+            "emberfall"
           ],
           "actions": [
             {
@@ -128,15 +139,6 @@
                 }
               ]
             }
-          ],
-          "region": "emberfall-town",
-          "terrain": "town-facility",
-          "edges": [
-            {
-              "to": "emberfall",
-              "kind": "scene",
-              "path_ko": "마을 돌길"
-            }
           ]
         },
         {
@@ -149,6 +151,9 @@
             "rest",
             "store_belongings",
             "talk_brann"
+          ],
+          "connections": [
+            "emberfall"
           ],
           "actions": [
             {
@@ -189,15 +194,6 @@
               "label_ko": "Brann에게 말 걸기",
               "description_ko": "Brann Lume에게 샘물 근처에서 휴식하는 법을 묻습니다."
             }
-          ],
-          "region": "emberfall-town",
-          "terrain": "town-facility",
-          "edges": [
-            {
-              "to": "emberfall",
-              "kind": "scene",
-              "path_ko": "마을 돌길"
-            }
           ]
         },
         {
@@ -209,6 +205,9 @@
             "list_contracts",
             "turn_in_contract",
             "ask_vela_advice"
+          ],
+          "connections": [
+            "emberfall"
           ],
           "actions": [
             {
@@ -237,15 +236,6 @@
               "label_ko": "Vela에게 조언 묻기",
               "description_ko": "Vela March에게 공개 의뢰의 위험을 묻습니다."
             }
-          ],
-          "region": "emberfall-town",
-          "terrain": "town-facility",
-          "edges": [
-            {
-              "to": "emberfall",
-              "kind": "scene",
-              "path_ko": "마을 돌길"
-            }
           ]
         },
         {
@@ -257,6 +247,9 @@
             "read_notices",
             "request_directions",
             "talk_pell"
+          ],
+          "connections": [
+            "emberfall"
           ],
           "actions": [
             {
@@ -285,15 +278,6 @@
               "label_ko": "Pell에게 말 걸기",
               "description_ko": "Pell Azure에게 공개된 안전 길의 상황을 묻습니다."
             }
-          ],
-          "region": "emberfall-town",
-          "terrain": "town-facility",
-          "edges": [
-            {
-              "to": "emberfall",
-              "kind": "scene",
-              "path_ko": "마을 돌길"
-            }
           ]
         },
         {
@@ -307,6 +291,9 @@
             "buy_meal",
             "hear_rumor",
             "talk_sena"
+          ],
+          "connections": [
+            "emberfall"
           ],
           "actions": [
             {
@@ -354,15 +341,6 @@
               "label_ko": "Sena에게 말 걸기",
               "description_ko": "Sena Coal에게 검증된 소문을 분별하는 법을 묻습니다."
             }
-          ],
-          "region": "emberfall-town",
-          "terrain": "town-facility",
-          "edges": [
-            {
-              "to": "emberfall",
-              "kind": "scene",
-              "path_ko": "마을 돌길"
-            }
           ]
         }
       ],
@@ -375,92 +353,19 @@
           "label_ko": "온천 관찰",
           "description_ko": "따뜻한 샤드 온천의 변화를 관찰합니다."
         }
-      ],
-      "region": "emberfall-town",
-      "terrain": "shard-spring",
-      "edges": [
-        {
-          "to": "emberfall-shop",
-          "kind": "scene",
-          "path_ko": "마을 돌길"
-        },
-        {
-          "to": "emberfall-inn",
-          "kind": "scene",
-          "path_ko": "마을 돌길"
-        },
-        {
-          "to": "emberfall-quest-hall",
-          "kind": "scene",
-          "path_ko": "마을 돌길"
-        },
-        {
-          "to": "emberfall-plaza",
-          "kind": "scene",
-          "path_ko": "마을 돌길"
-        },
-        {
-          "to": "emberfall-tavern",
-          "kind": "scene",
-          "path_ko": "마을 돌길"
-        },
-        {
-          "to": "mossreach-terraces",
-          "kind": "overland",
-          "path_ko": "비 젖은 유리 둑길"
-        }
       ]
     }
   ],
   "hunting_grounds": [
     {
-      "id": "mossreach-terraces",
-      "name": "Mossreach Terraces",
-      "kind": "hunting_ground",
-      "description": "Rain-dark terraces step through mossy glass ridges.",
-      "region": "mossreach-wilds",
-      "terrain": "wetland-terrace",
-      "edges": [
-        {
-          "to": "emberfall",
-          "kind": "overland",
-          "path_ko": "비 젖은 유리 둑길"
-        },
-        {
-          "to": "mossreach",
-          "kind": "overland",
-          "path_ko": "층계 사이 오솔길"
-        }
-      ],
-      "actions": [
-        {
-          "id": "terraces-gather-reeds",
-          "kind": "gather",
-          "outcome_code": "terrace-reeds-gathered",
-          "label_ko": "습지 갈대 채집",
-          "description_ko": "젖은 층계의 갈대와 안전한 발판을 살핍니다."
-        },
-        {
-          "id": "terraces-scout-mist",
-          "kind": "scout",
-          "outcome_code": "terrace-mist-scouted",
-          "label_ko": "안개 정찰",
-          "description_ko": "안개 너머의 길과 흔적을 정찰합니다."
-        },
-        {
-          "id": "terraces-camp-shelf",
-          "kind": "camp",
-          "outcome_code": "terrace-camp-kept",
-          "label_ko": "층계 야영",
-          "description_ko": "비를 피할 수 있는 층계에서 야영합니다."
-        }
-      ]
-    },
-    {
       "id": "mossreach",
       "name": "Mossreach Wilds",
       "kind": "hunting_ground",
       "description": "Rain-bright terraces where glasshorn hares and reed wolves roam.",
+      "connections": [
+        "emberfall",
+        "vault-1"
+      ],
       "actions": [
         {
           "id": "mossreach-hunt",
@@ -497,63 +402,6 @@
           "label_ko": "야영",
           "description_ko": "야영하며 소량의 HP와 MP를 회복합니다."
         }
-      ],
-      "region": "mossreach-wilds",
-      "terrain": "glass-upland",
-      "edges": [
-        {
-          "to": "mossreach-terraces",
-          "kind": "overland",
-          "path_ko": "층계 사이 오솔길"
-        },
-        {
-          "to": "mossreach-vaultgate",
-          "kind": "overland",
-          "path_ko": "이끼 능선길"
-        }
-      ]
-    },
-    {
-      "id": "mossreach-vaultgate",
-      "name": "Mossreach Vaultgate Cliffs",
-      "kind": "hunting_ground",
-      "description": "A cliff gate overlooks the sealed descent into the Starless Vault.",
-      "region": "mossreach-wilds",
-      "terrain": "cliff-gate",
-      "edges": [
-        {
-          "to": "mossreach",
-          "kind": "overland",
-          "path_ko": "이끼 능선길"
-        },
-        {
-          "to": "vault-1",
-          "kind": "dungeon_gate",
-          "path_ko": "금고로 내려가는 절벽길"
-        }
-      ],
-      "actions": [
-        {
-          "id": "vaultgate-scout-cliff",
-          "kind": "scout",
-          "outcome_code": "vaultgate-cliff-scouted",
-          "label_ko": "절벽 정찰",
-          "description_ko": "금고 입구와 절벽의 발판을 정찰합니다."
-        },
-        {
-          "id": "vaultgate-camp-watch",
-          "kind": "camp",
-          "outcome_code": "vaultgate-camp-kept",
-          "label_ko": "어귀 야영",
-          "description_ko": "금고 어귀에서 경계를 세우고 야영합니다."
-        },
-        {
-          "id": "vaultgate-observe-gate",
-          "kind": "observe",
-          "outcome_code": "vaultgate-gate-observed",
-          "label_ko": "금고 문 관찰",
-          "description_ko": "닫힌 금고 문과 바람의 소리를 관찰합니다."
-        }
       ]
     }
   ],
@@ -568,6 +416,10 @@
           "kind": "dungeon_floor",
           "name": "Echo Gallery",
           "description": "Resonant halls patrolled by clay sentries.",
+          "connections": [
+            "mossreach",
+            "vault-2"
+          ],
           "actions": [
             {
               "id": "vault-1-scout",
@@ -593,20 +445,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "mossreach-vaultgate",
-              "kind": "dungeon_gate",
-              "path_ko": "금고로 내려가는 절벽길"
-            },
-            {
-              "to": "vault-2",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -615,6 +453,10 @@
           "kind": "dungeon_floor",
           "name": "Flooded Archive",
           "description": "Half-submerged records watched by ink eels.",
+          "connections": [
+            "vault-1",
+            "vault-3"
+          ],
           "actions": [
             {
               "id": "vault-2-scout",
@@ -640,20 +482,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-1",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
-            },
-            {
-              "to": "vault-3",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -662,6 +490,10 @@
           "kind": "dungeon_floor",
           "name": "Nightglass Causeway",
           "description": "A narrow bridge crossed by drifting mirror moths.",
+          "connections": [
+            "vault-2",
+            "vault-4"
+          ],
           "actions": [
             {
               "id": "vault-3-scout",
@@ -687,20 +519,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-2",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
-            },
-            {
-              "to": "vault-4",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -709,6 +527,10 @@
           "kind": "dungeon_floor",
           "name": "Hushed Reservoir",
           "description": "Still cisterns conceal pressure locks and pale shellbacks.",
+          "connections": [
+            "vault-3",
+            "vault-5"
+          ],
           "actions": [
             {
               "id": "vault-4-scout",
@@ -734,20 +556,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-3",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
-            },
-            {
-              "to": "vault-5",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -756,6 +564,10 @@
           "kind": "dungeon_floor",
           "name": "Sable Orrery",
           "description": "Unlit brass planets rotate around a cold artificial moon.",
+          "connections": [
+            "vault-4",
+            "vault-6"
+          ],
           "actions": [
             {
               "id": "vault-5-scout",
@@ -781,20 +593,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-4",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
-            },
-            {
-              "to": "vault-6",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -803,6 +601,10 @@
           "kind": "dungeon_floor",
           "name": "Gloam Workshop",
           "description": "Abandoned lens-cutters continue their dangerous programmed motions.",
+          "connections": [
+            "vault-5",
+            "vault-7"
+          ],
           "actions": [
             {
               "id": "vault-6-scout",
@@ -828,20 +630,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-5",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
-            },
-            {
-              "to": "vault-7",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -850,6 +638,10 @@
           "kind": "dungeon_floor",
           "name": "Ashen Conservatory",
           "description": "Black-leaf vines thrive beneath lamps that shed no warmth.",
+          "connections": [
+            "vault-6",
+            "vault-8"
+          ],
           "actions": [
             {
               "id": "vault-7-scout",
@@ -875,20 +667,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-6",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
-            },
-            {
-              "to": "vault-8",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -897,6 +675,10 @@
           "kind": "dungeon_floor",
           "name": "Inverted Belfry",
           "description": "A descending bell tower rings when intruders step on false stairs.",
+          "connections": [
+            "vault-7",
+            "vault-9"
+          ],
           "actions": [
             {
               "id": "vault-8-scout",
@@ -922,20 +704,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-7",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
-            },
-            {
-              "to": "vault-9",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -944,6 +712,10 @@
           "kind": "dungeon_floor",
           "name": "Crownless Antechamber",
           "description": "Nine sealed doors open only when their reflected symbols align.",
+          "connections": [
+            "vault-8",
+            "vault-10"
+          ],
           "actions": [
             {
               "id": "vault-9-scout",
@@ -969,20 +741,6 @@
               "label_ko": "전투",
               "description_ko": "현재 구역의 적대적 조우에 대응합니다."
             }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-8",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
-            },
-            {
-              "to": "vault-10",
-              "kind": "dungeon",
-              "path_ko": "다음 층의 석조 통로"
-            }
           ]
         },
         {
@@ -991,6 +749,9 @@
           "kind": "boss_room",
           "name": "Chamber of the Null Cartographer",
           "description": "A round map chamber defended by a construct that erases every path it measures.",
+          "connections": [
+            "vault-9"
+          ],
           "completion": {
             "boss_id": "null-cartographer",
             "rewards": [
@@ -1025,15 +786,6 @@
               "encounter_code": "null-cartographer",
               "label_ko": "보스 도전",
               "description_ko": "널 카토그래퍼에게 정식으로 도전합니다."
-            }
-          ],
-          "region": "starless-vault",
-          "terrain": "vault-depth",
-          "edges": [
-            {
-              "to": "vault-9",
-              "kind": "dungeon",
-              "path_ko": "이전 층의 석조 통로"
             }
           ]
         }

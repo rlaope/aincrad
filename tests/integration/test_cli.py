@@ -105,8 +105,8 @@ def test_movement_awards_zero_xp_and_round_trips_through_hash_replay(
     )
 
     records = EventLog(event_log).verify()
-    assert records[0].event["schema_version"] == 6
-    assert records[0].event["rules_version"] == 5
+    assert records[0].event["schema_version"] == 7
+    assert records[0].event["rules_version"] == 6
     tick = records[1].event
     hero_event = next(
         event
@@ -142,9 +142,9 @@ def test_identity_profile_round_trips_through_v3_log_and_history(tmp_path: Path)
     replayed = _default_replay(event_log=event_log, verify_hash=True)
 
     init = EventLog(event_log).verify()[0].event
-    assert init["version"] == 6
-    assert init["schema_version"] == 6
-    assert init["rules_version"] == 5
+    assert init["version"] == 7
+    assert init["schema_version"] == 7
+    assert init["rules_version"] == 6
     assert init["identity"] == identity.to_json()
     assert replayed.adventurers == simulated.adventurers
     assert HistoryArchive(history_root).load_run(1).metadata["identity"] == identity.to_json()
@@ -541,7 +541,7 @@ def test_prompt_always_lists_ai_delegation_last() -> None:
 
     assert selected in allowed
     assert selected.action is ActionKind.MOVE
-    assert selected.target_location_id == "mossreach"
+    assert selected.target_location_id == "mossreach-terraces"
     lines = stdout.getvalue().splitlines()
     ai_option = next(line for line in lines if "AI 판단에 맡긴다" in line)
     assert ai_option.startswith(f"{len(allowed) + 1}.")
@@ -811,7 +811,7 @@ def test_full_day_appends_24_hours_and_one_daily_summary(tmp_path: Path) -> None
 def test_run_hours_stops_immediately_after_selected_hero_dies() -> None:
     world = _starting_world(CharacterClass.MAGE)
     hero = world.adventurers["hero"]
-    fragile = replace(hero, location_id="mossreach", stats=replace(hero.stats, hp=1))
+    fragile = replace(hero, location_id="mossreach-vaultgate", stats=replace(hero.stats, hp=1))
     world = replace(world, adventurers={fragile.id: fragile})
     calls: list[int] = []
     story_calls: list[int] = []
@@ -851,7 +851,9 @@ def test_dead_hero_history_records_character_end_exactly_once(
             character_class, hero_name, content_revision=content_revision
         )
         hero = world.adventurers["hero"]
-        fragile = replace(hero, location_id="mossreach", stats=replace(hero.stats, hp=1))
+        fragile = replace(
+            hero, location_id="mossreach-vaultgate", stats=replace(hero.stats, hp=1)
+        )
         return replace(world, adventurers={**world.adventurers, fragile.id: fragile})
 
     def enter_dungeon(world, actor_id: str) -> ActionIntent:
@@ -893,7 +895,7 @@ def test_legacy_replay_projects_korean_without_internal_detail_keys(tmp_path: Pa
         chooser=lambda _world, actor_id: ActionIntent(
             actor_id,
             ActionKind.MOVE,
-            target_location_id="emberfall-inn",
+            target_location_id="mossreach-terraces",
         ),
     )
     event_log = tmp_path / "legacy.jsonl"
@@ -904,8 +906,8 @@ def test_legacy_replay_projects_korean_without_internal_detail_keys(tmp_path: Pa
     replayed = _default_replay(event_log=event_log, verify_hash=True)
     rendered = "\n".join(event.message for event in replayed.events)
 
-    assert "고요한 심지 여관으로 이동했다" in rendered
-    assert "emberfall-inn" not in rendered
+    assert "이끼자락 층계로 이동했다" in rendered
+    assert "mossreach-terraces" not in rendered
     assert "destination=" not in rendered
     assert "xp_awarded" not in rendered
     assert "character_class=" not in rendered
@@ -1001,7 +1003,7 @@ def test_strict_replay_rejects_records_after_selected_hero_dies(
         hero = world.adventurers["hero"]
         fragile = replace(
             hero,
-            location_id="mossreach",
+            location_id="mossreach-vaultgate",
             stats=replace(hero.stats, hp=1),
         )
         return replace(world, adventurers={**world.adventurers, "hero": fragile})
@@ -1129,7 +1131,7 @@ def test_injected_modern_runner_receives_hours_and_new_options(tmp_path: Path) -
     assert received["hours"] == 1
 
 
-def test_schema_v6_replay_rejects_raw_text_in_a_rehashed_interaction_proposal(
+def test_schema_v7_replay_rejects_raw_text_in_a_rehashed_interaction_proposal(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "source.jsonl"
@@ -1153,7 +1155,7 @@ def test_schema_v6_replay_rejects_raw_text_in_a_rehashed_interaction_proposal(
         _default_replay(event_log=malformed, verify_hash=True)
 
 
-def test_schema_v6_replay_rejects_boolean_proposal_quantity(
+def test_schema_v7_replay_rejects_boolean_proposal_quantity(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "source.jsonl"
