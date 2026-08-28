@@ -125,13 +125,16 @@ def test_textual_home_uses_widget_menu_without_plain_output(tmp_path: Path) -> N
 def test_textual_settings_describes_story_modes_without_provider_names(tmp_path: Path) -> None:
     interaction = FakeInteraction("settings", "story-mode", "rich", "exit")
 
-    assert _run_home_textual(
-        runner=None,
-        stdin=StringIO(),
-        stdout=StringIO(),
-        history_root=tmp_path / "history",
-        interaction=interaction,  # type: ignore[arg-type]
-    ) == 0
+    assert (
+        _run_home_textual(
+            runner=None,
+            stdin=StringIO(),
+            stdout=StringIO(),
+            history_root=tmp_path / "history",
+            interaction=interaction,  # type: ignore[arg-type]
+        )
+        == 0
+    )
 
     assert [title for title, _ in interaction.menus] == [
         "메인 메뉴",
@@ -149,9 +152,7 @@ def test_textual_settings_describes_story_modes_without_provider_names(tmp_path:
         "뒤로",
     ]
     visible_copy = " ".join(
-        option.label + option.description
-        for _, options in interaction.menus
-        for option in options
+        option.label + option.description for _, options in interaction.menus for option in options
     )
     assert all(term not in visible_copy for term in ("Kimi", "Hermes", "provider", "fallback"))
 
@@ -313,14 +314,67 @@ def test_textual_facility_action_context_names_the_fixture_resident_in_korean() 
 
 
 @pytest.mark.parametrize(
+    ("location_id", "conversation_label"),
+    (
+        ("emberfall-shop", "Orrin에게 말 걸기"),
+        ("emberfall-inn", "Brann에게 말 걸기"),
+        ("emberfall-quest-hall", "Vela에게 조언 묻기"),
+        ("emberfall-plaza", "Pell에게 말 걸기"),
+        ("emberfall-tavern", "Sena에게 말 걸기"),
+    ),
+)
+def test_textual_facility_menus_expose_named_resident_conversations(
+    location_id: str, conversation_label: str
+) -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    hero = replace(world.adventurers["hero"], location_id=location_id)
+    world = replace(world, adventurers={**world.adventurers, hero.id: hero})
+    selected_intent = next(
+        intent
+        for intent in _available_intents(world, hero.id)
+        if intent.action is not ActionKind.MOVE
+    )
+    interaction = FakeInteraction(selected_intent)
+
+    _prompt_for_intent_textual(world, hero.id, interaction=interaction)  # type: ignore[arg-type]
+
+    assert conversation_label in [option.label for option in interaction.menus[0][1]]
+
+
+@pytest.mark.parametrize(
+    ("location_id", "menu_label"),
+    (
+        ("emberfall-shop", "상품 목록 보기"),
+        ("emberfall-tavern", "메뉴 보기"),
+    ),
+)
+def test_textual_facility_menus_expose_read_only_catalog_actions(
+    location_id: str, menu_label: str
+) -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    hero = replace(world.adventurers["hero"], location_id=location_id)
+    world = replace(world, adventurers={**world.adventurers, hero.id: hero})
+    selected_intent = next(
+        intent
+        for intent in _available_intents(world, hero.id)
+        if intent.action is not ActionKind.MOVE
+    )
+    interaction = FakeInteraction(selected_intent)
+
+    _prompt_for_intent_textual(world, hero.id, interaction=interaction)  # type: ignore[arg-type]
+
+    assert menu_label in [option.label for option in interaction.menus[0][1]]
+
+
+@pytest.mark.parametrize(
     ("location_id", "expected_local_labels"),
     (
         ("emberfall", ("온천 관찰",)),
-        ("emberfall-shop", ("보급품 구입", "잔해 판매")),
-        ("emberfall-inn", ("숙박", "물품 보관 문의")),
-        ("emberfall-quest-hall", ("의뢰 목록 확인",)),
-        ("emberfall-plaza", ("공지 읽기", "길 안내 요청")),
-        ("emberfall-tavern", ("식사 구매", "검증된 소문 듣기")),
+        ("emberfall-shop", ("상품 목록 보기", "보급품 구입", "전리품 판매", "Orrin에게 말 걸기")),
+        ("emberfall-inn", ("식사", "숙박", "보관 문의", "Brann에게 말 걸기")),
+        ("emberfall-quest-hall", ("의뢰 열람", "완료 보고", "Vela에게 조언 묻기")),
+        ("emberfall-plaza", ("공지 읽기", "길 묻기", "Pell에게 말 걸기")),
+        ("emberfall-tavern", ("메뉴 보기", "술 주문", "식사", "소문 듣기", "Sena에게 말 걸기")),
         ("mossreach", ("사냥", "채집", "정찰", "야영")),
         ("vault-1", ("정찰", "수색", "전투")),
         ("vault-10", ("정찰", "수색", "보스 도전")),
@@ -358,9 +412,7 @@ def test_textual_action_menu_uses_each_locations_contextual_catalog(
 def test_identity_changes_commentary_but_not_recommended_destinations() -> None:
     world = _starting_world(CharacterClass.WARRIOR, "유리별")
     first_move = next(
-        intent
-        for intent in _available_intents(world, "hero")
-        if intent.action is ActionKind.MOVE
+        intent for intent in _available_intents(world, "hero") if intent.action is ActionKind.MOVE
     )
     careful = CharacterIdentityProfile(
         personality_description="위험을 오래 살피고 확실한 길만 고른다.",
@@ -388,9 +440,7 @@ def test_identity_changes_commentary_but_not_recommended_destinations() -> None:
 
     careful_options = careful_interaction.menus[1][1][:3]
     bold_options = bold_interaction.menus[1][1][:3]
-    assert [option.value for option in careful_options] == [
-        option.value for option in bold_options
-    ]
+    assert [option.value for option in careful_options] == [option.value for option in bold_options]
     assert [option.description for option in careful_options] != [
         option.description for option in bold_options
     ]
@@ -431,13 +481,16 @@ def test_textual_home_shows_resolved_turn_story_before_continue_choice(tmp_path:
         "exit",
     )
 
-    assert _run_home_textual(
-        runner=None,
-        stdin=StringIO(),
-        stdout=StringIO(),
-        history_root=tmp_path / "history",
-        interaction=interaction,
-    ) == 0
+    assert (
+        _run_home_textual(
+            runner=None,
+            stdin=StringIO(),
+            stdout=StringIO(),
+            history_root=tmp_path / "history",
+            interaction=interaction,
+        )
+        == 0
+    )
 
     story_index = next(
         index for index, title in enumerate(interaction.timeline) if title.endswith("시간의 이야기")
@@ -490,19 +543,20 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     monkeypatch.setattr("aincrad.cli.HermesKimiTurnStoryAdapter", FakeAdapter)
     monkeypatch.delenv("AINCRAD_STORY_MODE")
 
-    assert _run_home_textual(
-        runner=None,
-        stdin=StringIO(),
-        stdout=StringIO(),
-        history_root=tmp_path / "history",
-        interaction=interaction,  # type: ignore[arg-type]
-    ) == 0
+    assert (
+        _run_home_textual(
+            runner=None,
+            stdin=StringIO(),
+            stdout=StringIO(),
+            history_root=tmp_path / "history",
+            interaction=interaction,  # type: ignore[arg-type]
+        )
+        == 0
+    )
 
     assert len(requests) == 1
     assert provider_saw_story_shell == [True]
-    assert interaction.story_loading_titles == [
-        "1일차 00:00 · 잿불마을 · 한 시간의 이야기"
-    ]
+    assert interaction.story_loading_titles == ["1일차 00:00 · 잿불마을 · 한 시간의 이야기"]
     request = requests[0]
     assert request.selected_actions[0].outcome_ko
     assert all(request.selected_actions[0].details_ko)
@@ -543,13 +597,16 @@ def test_textual_ai_delegation_names_the_action_it_actually_resolved(tmp_path: P
         "exit",
     )
 
-    assert _run_home_textual(
-        runner=None,
-        stdin=StringIO(),
-        stdout=StringIO(),
-        history_root=tmp_path / "history",
-        interaction=interaction,
-    ) == 0
+    assert (
+        _run_home_textual(
+            runner=None,
+            stdin=StringIO(),
+            stdout=StringIO(),
+            history_root=tmp_path / "history",
+            interaction=interaction,
+        )
+        == 0
+    )
 
     rendered = "\n".join(interaction.story_screens[0][1])
     assert "주변 상황을 살핀 유리별은 길을 골라 고요한 심지 여관으로 향했다" in rendered
@@ -584,13 +641,16 @@ def test_textual_fatal_hour_shows_story_without_continue_menu(
         name="유리별",
     )
 
-    assert _run_home_textual(
-        runner=None,
-        stdin=StringIO(),
-        stdout=StringIO(),
-        history_root=tmp_path / "history",
-        interaction=interaction,  # type: ignore[arg-type]
-    ) == 0
+    assert (
+        _run_home_textual(
+            runner=None,
+            stdin=StringIO(),
+            stdout=StringIO(),
+            history_root=tmp_path / "history",
+            interaction=interaction,  # type: ignore[arg-type]
+        )
+        == 0
+    )
 
     rendered = "\n".join(interaction.story_screens[0][1])
     assert "유리별의 HP는 0이 되었고, 이 여정은 끝났다" in rendered

@@ -11,11 +11,17 @@ from aincrad.domain.models import ActionIntent, ActionKind, ContextualAction, Wo
 _EXPECTED_ACTION_KINDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "emberfall": ("observe",),
-        "emberfall-shop": ("buy_supplies", "sell_salvage"),
-        "emberfall-inn": ("lodge", "store_belongings"),
-        "emberfall-quest-hall": ("list_contracts", "turn_in_contract"),
-        "emberfall-plaza": ("read_notices", "request_directions"),
-        "emberfall-tavern": ("buy_meal", "hear_rumor"),
+        "emberfall-shop": ("browse_goods", "buy_supplies", "sell_salvage", "talk_orrin"),
+        "emberfall-inn": ("eat_inn_meal", "lodge", "store_belongings", "talk_brann"),
+        "emberfall-quest-hall": ("list_contracts", "turn_in_contract", "ask_vela_advice"),
+        "emberfall-plaza": ("read_notices", "request_directions", "talk_pell"),
+        "emberfall-tavern": (
+            "view_tavern_menu",
+            "order_drink",
+            "buy_meal",
+            "hear_rumor",
+            "talk_sena",
+        ),
         "mossreach": ("hunt", "gather", "scout", "camp"),
         **{f"vault-{depth}": ("scout", "search", "fight") for depth in range(1, 10)},
         "vault-10": ("scout", "search", "challenge"),
@@ -24,11 +30,17 @@ _EXPECTED_ACTION_KINDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 
 EXPECTED_FACILITY_SERVICES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "emberfall-shop": ("buy_supplies", "sell_salvage"),
-        "emberfall-inn": ("rest", "store_belongings"),
-        "emberfall-quest-hall": ("list_contracts", "turn_in_contract"),
-        "emberfall-plaza": ("read_notices", "request_directions"),
-        "emberfall-tavern": ("buy_meal", "hear_rumor"),
+        "emberfall-shop": ("browse_goods", "buy_supplies", "sell_salvage", "talk_orrin"),
+        "emberfall-inn": ("eat_inn_meal", "rest", "store_belongings", "talk_brann"),
+        "emberfall-quest-hall": ("list_contracts", "turn_in_contract", "ask_vela_advice"),
+        "emberfall-plaza": ("read_notices", "request_directions", "talk_pell"),
+        "emberfall-tavern": (
+            "view_tavern_menu",
+            "order_drink",
+            "buy_meal",
+            "hear_rumor",
+            "talk_sena",
+        ),
     }
 )
 
@@ -136,8 +148,6 @@ def available_action_intents(world: WorldState, adventurer_id: str) -> tuple[Act
         for destination in location.connections
     )
     local = tuple(
-        ActionIntent(adventurer_id, action.kind)
-        for action in location.contextual_actions
-        if not action.requires_completed_contract
+        ActionIntent(adventurer_id, action.kind) for action in location.contextual_actions
     )
     return (*moves, *local)

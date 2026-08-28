@@ -80,7 +80,7 @@ def test_move_changes_location_and_emits_success_event() -> None:
             next_tick=1,
             target_location_id="field",
             quantity=1,
-            details=(('destination', 'field'),),
+            details=(("destination", "field"),),
         ),
     )
     assert world.adventurers["mira"].location_id == "town"
@@ -117,18 +117,14 @@ def test_rest_gather_trade_and_wait_form_a_life_action_slice() -> None:
     at_field, _ = apply_intent(
         rested, ActionIntent("mira", ActionKind.MOVE, target_location_id="field")
     )
-    gathered, _ = apply_intent(
-        at_field, ActionIntent("mira", ActionKind.GATHER), gather_yield=2
-    )
+    gathered, _ = apply_intent(at_field, ActionIntent("mira", ActionKind.GATHER), gather_yield=2)
     assert gathered.adventurers["mira"].resources == 2
     assert gathered.adventurers["mira"].activity is Activity.GATHERING
 
     at_town, _ = apply_intent(
         gathered, ActionIntent("mira", ActionKind.MOVE, target_location_id="town")
     )
-    traded, _ = apply_intent(
-        at_town, ActionIntent("mira", ActionKind.TRADE, quantity=2)
-    )
+    traded, _ = apply_intent(at_town, ActionIntent("mira", ActionKind.TRADE, quantity=2))
     assert traded.adventurers["mira"].resources == 0
     assert traded.adventurers["mira"].gold == 9
     assert traded.adventurers["mira"].activity is Activity.TRADING
@@ -190,9 +186,7 @@ def test_wealth_rejects_negative_values() -> None:
 def test_contextual_actions_emit_grounded_codes_and_only_mutate_supported_state() -> None:
     world = create_initial_world()
 
-    observed, observed_events = apply_intent(
-        world, ActionIntent("rhea-vale", ActionKind.OBSERVE)
-    )
+    observed, observed_events = apply_intent(world, ActionIntent("rhea-vale", ActionKind.OBSERVE))
     observed_event = cast(ActionSucceeded, observed_events[0])
     assert observed.adventurers["rhea-vale"].activity is Activity.OBSERVING
     assert dict(observed_event.details) == {
@@ -215,18 +209,152 @@ def test_contextual_actions_emit_grounded_codes_and_only_mutate_supported_state(
     assert "items" not in dict(purchase_event.details)
 
 
+@pytest.mark.parametrize(
+    ("location_id", "action", "action_id", "outcome_code"),
+    (
+        (
+            "emberfall-shop",
+            ActionKind.TALK_ORRIN,
+            "emberfall-shop-talk-orrin",
+            "orrin-counsel-recorded",
+        ),
+        (
+            "emberfall-inn",
+            ActionKind.TALK_BRANN,
+            "emberfall-inn-talk-brann",
+            "brann-counsel-recorded",
+        ),
+        (
+            "emberfall-quest-hall",
+            ActionKind.ASK_VELA_ADVICE,
+            "emberfall-quest-hall-ask-vela-advice",
+            "vela-advice-recorded",
+        ),
+        (
+            "emberfall-plaza",
+            ActionKind.TALK_PELL,
+            "emberfall-plaza-talk-pell",
+            "pell-directions-recorded",
+        ),
+        (
+            "emberfall-tavern",
+            ActionKind.TALK_SENA,
+            "emberfall-tavern-talk-sena",
+            "sena-rumor-recorded",
+        ),
+    ),
+)
+def test_facility_conversations_emit_grounded_events_without_economy_mutation(
+    location_id: str, action: ActionKind, action_id: str, outcome_code: str
+) -> None:
+    world = create_initial_world()
+    actor = replace(world.adventurers["rhea-vale"], location_id=location_id)
+    world = replace(world, adventurers={**world.adventurers, actor.id: actor})
+
+    next_world, events = apply_intent(world, ActionIntent(actor.id, action))
+
+    event = cast(ActionSucceeded, events[0])
+    assert next_world.adventurers[actor.id].gold == actor.gold
+    assert next_world.adventurers[actor.id].resources == actor.resources
+    assert dict(event.details) == {
+        "location_id": location_id,
+        "action_id": action_id,
+        "action_key": action.value,
+        "outcome_code": outcome_code,
+    }
+
+
 def test_unrepresentable_contract_turn_in_is_rejected_without_faking_quest_state() -> None:
     world = create_initial_world()
     quest_member = replace(world.adventurers["rhea-vale"], location_id="emberfall-quest-hall")
     world = replace(world, adventurers={**world.adventurers, quest_member.id: quest_member})
 
-    next_world, events = apply_intent(
-        world, ActionIntent("rhea-vale", ActionKind.TURN_IN_CONTRACT)
-    )
+    next_world, events = apply_intent(world, ActionIntent("rhea-vale", ActionKind.TURN_IN_CONTRACT))
 
     assert next_world is world
     assert isinstance(events[0], ActionRejected)
     assert events[0].reason == "completed_contract_not_representable"
+
+
+@pytest.mark.parametrize(
+    ("location_id", "action", "action_id", "outcome_code", "restore_hp", "restore_mp"),
+    (
+        (
+            "emberfall-inn",
+            ActionKind.EAT_INN_MEAL,
+            "emberfall-inn-eat-meal",
+            "inn-meal-served",
+            3,
+            1,
+        ),
+        (
+            "emberfall-tavern",
+            ActionKind.ORDER_DRINK,
+            "emberfall-tavern-order-drink",
+            "tavern-drink-served",
+            0,
+            2,
+        ),
+    ),
+)
+def test_paid_facility_services_charge_once_restore_stats_and_record_grounded_effects(
+    location_id: str,
+    action: ActionKind,
+    action_id: str,
+    outcome_code: str,
+    restore_hp: int,
+    restore_mp: int,
+) -> None:
+    world = create_initial_world()
+    actor = replace(
+        world.adventurers["rhea-vale"],
+        location_id=location_id,
+        gold=1,
+        stats=Stats(hp=10, max_hp=24, mp=0, max_mp=8),
+    )
+    world = replace(world, adventurers={**world.adventurers, actor.id: actor})
+
+    next_world, events = apply_intent(world, ActionIntent(actor.id, action))
+
+    served = next_world.adventurers[actor.id]
+    event = cast(ActionSucceeded, events[0])
+    assert served.gold == 0
+    assert served.stats == Stats(
+        hp=actor.stats.hp + restore_hp,
+        max_hp=actor.stats.max_hp,
+        mp=actor.stats.mp + restore_mp,
+        max_mp=actor.stats.max_mp,
+    )
+    assert dict(event.details) == {
+        "location_id": location_id,
+        "action_id": action_id,
+        "action_key": action.value,
+        "outcome_code": outcome_code,
+        "gold_delta": "-1",
+        **({"hp_restored": str(restore_hp)} if restore_hp else {}),
+        **({"mp_restored": str(restore_mp)} if restore_mp else {}),
+    }
+
+
+@pytest.mark.parametrize(
+    ("location_id", "action"),
+    (
+        ("emberfall-inn", ActionKind.EAT_INN_MEAL),
+        ("emberfall-tavern", ActionKind.ORDER_DRINK),
+    ),
+)
+def test_paid_facility_services_reject_insufficient_gold_without_mutation(
+    location_id: str, action: ActionKind
+) -> None:
+    world = create_initial_world()
+    actor = replace(world.adventurers["rhea-vale"], location_id=location_id, gold=0)
+    world = replace(world, adventurers={**world.adventurers, actor.id: actor})
+
+    next_world, events = apply_intent(world, ActionIntent(actor.id, action))
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].reason == "insufficient_gold"
 
 
 @pytest.mark.parametrize(
@@ -317,9 +445,7 @@ def test_every_fixture_contextual_action_resolves_with_its_grounded_action_id() 
         for configured in location.contextual_actions:
             actor = replace(base_actor, location_id=location.id, resources=1)
             at_location = replace(world, adventurers={**world.adventurers, actor.id: actor})
-            next_world, events = apply_intent(
-                at_location, ActionIntent(actor.id, configured.kind)
-            )
+            next_world, events = apply_intent(at_location, ActionIntent(actor.id, configured.kind))
 
             if configured.requires_completed_contract:
                 assert next_world is at_location

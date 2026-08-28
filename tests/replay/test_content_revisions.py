@@ -54,8 +54,8 @@ def test_schema_v3_rules_v2_replay_uses_frozen_content_when_current_content_evol
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture_path = Path(__file__).parents[1] / "fixtures" / "v3_events_warrior.jsonl"
-    frozen = load_packaged_world_fixture()
-    evolved = deepcopy(frozen)
+    frozen = load_packaged_world_fixture(revision="rules-v2")
+    evolved = deepcopy(load_packaged_world_fixture())
     future_action = evolved["towns"][0]["facilities"][0]["actions"][0]
     future_action["id"] = "shop-buy-supplies-v2"
     future_action["outcome_code"] = "facility.supplies.v2"

@@ -55,9 +55,7 @@ def test_successful_passive_actions_award_exactly_zero_xp(
         hero = replace(hero, stats=replace(hero.stats, hp=hp, mp=mp))
         world = replace(world, adventurers={hero.id: hero})
 
-    result = SimulationScheduler(seed=23).run_hour(
-        world, (replace(intent, adventurer_id=hero.id),)
-    )
+    result = SimulationScheduler(seed=23).run_hour(world, (replace(intent, adventurer_id=hero.id),))
 
     progressed = result.final_state.adventurers[hero.id]
     details = _details(result.events[0])
@@ -82,6 +80,46 @@ def test_successful_town_trade_awards_exactly_zero_xp() -> None:
     details = _details(result.events[0])
     assert details["xp_awarded"] == "0"
     assert progressed.exp == hero.exp
+
+
+@pytest.mark.parametrize(
+    ("location_id", "action"),
+    (
+        ("emberfall-shop", ActionKind.BROWSE_GOODS),
+        ("emberfall-tavern", ActionKind.VIEW_TAVERN_MENU),
+    ),
+)
+def test_read_only_facility_catalog_actions_award_exactly_zero_xp(
+    location_id: str, action: ActionKind
+) -> None:
+    world = _starting_world(CharacterClass.WARRIOR)
+    hero = replace(world.adventurers["hero"], location_id=location_id)
+    world = replace(world, adventurers={hero.id: hero})
+
+    result = SimulationScheduler(seed=23).run_hour(world, (ActionIntent(hero.id, action),))
+
+    details = _details(result.events[0])
+    assert details["xp_awarded"] == "0"
+    assert result.final_state.adventurers[hero.id].exp == hero.exp
+
+
+@pytest.mark.parametrize(
+    ("location_id", "action"),
+    (
+        ("emberfall-inn", ActionKind.EAT_INN_MEAL),
+        ("emberfall-tavern", ActionKind.ORDER_DRINK),
+    ),
+)
+def test_paid_facility_services_award_exactly_zero_xp(location_id: str, action: ActionKind) -> None:
+    world = _starting_world(CharacterClass.WARRIOR)
+    hero = replace(world.adventurers["hero"], location_id=location_id, gold=2)
+    world = replace(world, adventurers={hero.id: hero})
+
+    result = SimulationScheduler(seed=23).run_hour(world, (ActionIntent(hero.id, action),))
+
+    details = _details(result.events[0])
+    assert details["xp_awarded"] == "0"
+    assert result.final_state.adventurers[hero.id].exp == hero.exp
 
 
 @pytest.mark.parametrize(
