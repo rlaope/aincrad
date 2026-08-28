@@ -93,7 +93,6 @@ def test_local_fallback_is_immutable_and_action_and_location_specific() -> None:
     assert result.source == "local"
     assert "빛결 광장" in result.story_ko
     assert "대기" in result.story_ko
-    assert "성공" in result.story_ko
     assert "의뢰 제시" in result.story_ko
     assert ".에서" not in result.story_ko
     assert "판정" not in result.story_ko
@@ -103,6 +102,7 @@ def test_local_fallback_is_immutable_and_action_and_location_specific() -> None:
     assert "특징:" not in result.story_ko
     assert "대기’을" not in result.story_ko
     assert "‘대기’에 나섰다" in result.story_ko
+    assert "결국 성공" not in result.story_ko
     with pytest.raises(FrozenInstanceError):
         result.story_ko = "변경"  # type: ignore[misc]
 
@@ -145,6 +145,10 @@ def test_prompt_uses_only_public_resident_and_resolved_incident_facts() -> None:
         "합법성, 행동, 피해",
         "부재 사실을 반복해서 말하지 말라",
         "정확히 {\"story_ko\":\"...\"} JSON 객체 하나",
+        "Orrin Flint(상점 관리인): “대사”",
+        "고정 문구나 템플릿이 아니라 형식 예시",
+        "손으로 무엇을 집고, 보고, 건네고, 거절하는지",
+        "기척, 흐름, 무언가, 변화 같은 추상어",
     ):
         assert public_fact in prompt
     for hidden_fact in (
@@ -158,6 +162,112 @@ def test_prompt_uses_only_public_resident_and_resolved_incident_facts() -> None:
         raw_sentinel,
     ):
         assert hidden_fact not in prompt
+
+
+def test_local_incident_fallback_uses_named_resident_dialogue_without_verdict_prose() -> None:
+    request = replace(
+        _request(),
+        current_location_id="emberfall-shop",
+        current_location_name_ko="잿불창고 교역소",
+        scene_participants=(
+            TurnSceneParticipant("Orrin Flint", "상점 관리인", "물품 거래와 보급"),
+        ),
+        resolved_interactions=(
+            ResolvedInteraction(
+                title_ko="금 간 화물 상자",
+                npc_name_ko="Orrin Flint",
+                prompt_response_labels_ko=("상자를 살펴본다", "금 간 등불을 짚어준다"),
+                outcome_ko="성공",
+                effect_facts_ko=("골드 +2",),
+            ),
+        ),
+    )
+
+    story = local_turn_story(request).story_ko
+
+    assert "Orrin Flint(상점 관리인): “" in story
+    assert "금 간 화물 상자" in story
+    assert "골드 +2" in story
+    assert "상자을" not in story
+    assert "해결되었다 새" not in story
+    for verdict_prose in ("한 시간이 마무리되었다", "선택이 이어졌고", "결과는 성공", "확정되었다"):
+        assert verdict_prose not in story
+
+
+@pytest.mark.parametrize(
+    "broken_story",
+    (
+        "Orrin Flint(상점 관리인): “이 등불은 금이 갔",
+        "Orrin Flint(상점 관리인): “이건 � 등불이군.”",
+    ),
+)
+def test_adapter_falls_back_for_truncated_or_replacement_character_prose(
+    tmp_path: Path, broken_story: str
+) -> None:
+    executable = _executable(
+        tmp_path,
+        "broken-korean",
+        "import json\n"
+        f"print(json.dumps({{'story_ko': {broken_story!r}}}, ensure_ascii=False))\n",
+    )
+    request = replace(
+        _request(),
+        scene_participants=(
+            TurnSceneParticipant("Orrin Flint", "상점 관리인", "물품 거래와 보급"),
+        ),
+    )
+
+    result = HermesKimiTurnStoryAdapter(executable=executable).story(request)
+
+    assert result == local_turn_story(request)
+
+
+def test_adapter_preserves_different_grounded_dialogue_wording(tmp_path: Path) -> None:
+    request = replace(
+        _request(),
+        scene_participants=(
+            TurnSceneParticipant("Orrin Flint", "상점 관리인", "물품 거래와 보급"),
+        ),
+    )
+    stories = (
+        "Orrin Flint(상점 관리인): “등불을 이쪽에 놓아 보게.” 그는 상자 덮개를 손끝으로 밀었다.",
+        "Orrin Flint(상점 관리인): “금이 간 자리를 먼저 보지.” Orrin이 등불의 테를 들어 보였다.",
+    )
+
+    results = tuple(
+        HermesKimiTurnStoryAdapter(
+            executable=_executable(
+                tmp_path,
+                f"grounded-{index}",
+                "import json\n"
+                f"print(json.dumps({{'story_ko': {story!r}}}, ensure_ascii=False))\n",
+            )
+        ).story(request)
+        for index, story in enumerate(stories)
+    )
+
+    assert tuple(result.story_ko for result in results) == stories
+    assert all(result.source == "hermes_cli" for result in results)
+
+
+def test_adapter_falls_back_when_resident_scene_has_no_named_role_dialogue(tmp_path: Path) -> None:
+    executable = _executable(
+        tmp_path,
+        "abstract-resident-scene",
+        "import json\n"
+        "print(json.dumps({'story_ko': "
+        "'가게 안에 묘한 기척이 흐르고 무언가 달라진 듯했다.'}, ensure_ascii=False))\n",
+    )
+    request = replace(
+        _request(),
+        scene_participants=(
+            TurnSceneParticipant("Orrin Flint", "상점 관리인", "물품 거래와 보급"),
+        ),
+    )
+
+    result = HermesKimiTurnStoryAdapter(executable=executable).story(request)
+
+    assert result == local_turn_story(request)
 
 
 def test_adapter_accepts_only_the_known_hermes_unknown_toolset_warning_prefix(

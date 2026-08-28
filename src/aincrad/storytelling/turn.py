@@ -180,25 +180,28 @@ class TurnStoryResult:
 
 
 def local_turn_story(request: TurnStoryRequest) -> TurnStoryResult:
-    """Produce a readable, deterministic Korean scene from resolved visible facts."""
+    """Produce a concrete offline scene from resolved visible facts."""
 
-    actions = " ".join(_local_action_sentence(action) for action in request.selected_actions)
-    story_event = _local_story_event_sentence(request.resolved_story_event)
-    participants = _local_participant_sentence(request.scene_participants)
-    interactions = " ".join(
-        _local_interaction_sentence(item) for item in request.resolved_interactions
+    actions = (
+        ""
+        if request.resolved_interactions
+        else " ".join(_local_action_sentence(action) for action in request.selected_actions)
     )
-    identity = " ".join(
-        label.partition(":")[2].strip() or label for label in request.identity_labels_ko
+    story_event = _local_story_event_sentence(request.resolved_story_event)
+    interactions = " ".join(
+        _local_interaction_sentence(item, request) for item in request.resolved_interactions
     )
     opening = (
         f"{request.day}일차 {request.hour:02d}시, {request.current_location_name_ko}. "
         f"{request.current_location_description_ko}"
     )
-    identity_clause = f" {identity}" if identity else ""
-    prose = (
-        f"{opening}{identity_clause} 한 시간이 마무리되었다. {participants} "
-        f"{actions} {interactions} {story_event}"
+    participant = (
+        ""
+        if request.resolved_interactions
+        else _local_participant_sentence(request.scene_participants)
+    )
+    prose = " ".join(
+        part for part in (opening, participant, actions, interactions, story_event) if part
     )
     return TurnStoryResult(_display_text(prose), "local")
 
@@ -408,7 +411,13 @@ def _prompt_bytes(request: TurnStoryRequest) -> bytes:
         "감각적 장면을 자유롭게 쓰되, DATA가 확정한 사실만 배경으로 삼아라. 합법성, 행동, 피해, "
         "회복, 골드·자원·인벤토리, 보상, EXP, 관계, 파티, 사건, 정체성, 성별·대명사를 "
         "새로 만들거나 바꾸지 말라. 획득·소모·피해·회복은 DATA의 정확한 값만 언급하라. "
-        "뒷받침되지 않는 사실은 생략하고, 부재 사실을 반복해서 말하지 말라. 원시 canonical ID를 "
+        "상주 NPC가 있으면 `Orrin Flint(상점 관리인): “대사”`처럼 이름과 역할이 보이는 직접 "
+        "대사를 장면 설명과 섞어라. 이것은 고정 문구나 템플릿이 아니라 형식 예시이며, 실제 대사와 "
+        "문장 구성은 장면마다 자유롭게 바꿔라. 손으로 무엇을 집고, 보고, 건네고, 거절하는지와 "
+        "상대의 표정·시선·말을 구체적으로 써라. 기척, 흐름, 무언가, 변화 같은 추상어로 핵심 "
+        "결과를 대신하지 말고, 판정 보고서처럼 `결과는 확정되었다`라고 요약하지 말라. 자연스러운 "
+        "한국어 완결문만 쓰고 조사나 문장을 중간에서 끊지 말라. 뒷받침되지 않는 사실은 생략하고, "
+        "부재 사실을 반복해서 말하지 말라. 원시 canonical ID를 "
         "출력하지 말라. 출력은 마크다운이나 설명 없이 정확히 {\"story_ko\":\"...\"} JSON 객체 "
         "하나여야 한다.\nDATA="
     )
@@ -443,9 +452,23 @@ def _external_result(request: TurnStoryRequest, stdout: bytes) -> TurnStoryResul
     raw_story = payload["story_ko"]
     if type(raw_story) is not str:
         raise ValueError("story response must contain a string")
+    if "\ufffd" in raw_story:
+        raise ValueError("story response contains a replacement character")
     clean_story = sanitize_terminal_text(raw_story).strip()
     if not clean_story or clip_display(clean_story, _MAX_STORY_CELLS) != clean_story:
         raise ValueError("story response is empty or exceeds the display bound")
+    if clean_story.count("“") != clean_story.count("”"):
+        raise ValueError("story response contains an incomplete quotation")
+    if clean_story[-1] not in ".!?。！？…\"'”’":
+        raise ValueError("story response ends before a complete sentence")
+    if request.scene_participants and not any(
+        re.search(
+            rf"{re.escape(participant.name_ko)}\s*\({re.escape(participant.role_ko)}\)\s*:\s*[“\"]",
+            clean_story,
+        )
+        for participant in request.scene_participants
+    ):
+        raise ValueError("resident scene lacks named role dialogue")
     if request.current_location_id in clean_story:
         raise ValueError("story response exposed a canonical location id")
     return TurnStoryResult(clean_story, "hermes_cli")
@@ -457,32 +480,55 @@ def _display_text(text: str) -> str:
 
 def _local_action_sentence(action: ResolvedAction) -> str:
     detail = f" {'; '.join(action.details_ko)}." if action.details_ko else ""
-    return (
-        f"{action.actor_name_ko}은 ‘{action.action_ko}’에 나섰다. "
-        f"결국 {action.outcome_ko}.{detail}"
-    )
+    outcome = " 뜻대로 되지 않았다." if action.outcome_ko != "성공" else ""
+    return f"{action.actor_name_ko}은 ‘{action.action_ko}’에 나섰다.{outcome}{detail}"
 
 
 def _local_story_event_sentence(event: ResolvedStoryEvent | None) -> str:
     if event is None:
         return ""
-    detail = f" {'; '.join(event.details_ko)}." if event.details_ko else "."
-    return f"이와 함께 {event.kind_ko} 사건이 해결되었다{detail}"
+    detail = f" {'; '.join(event.details_ko)}" if event.details_ko else ""
+    return f"{event.kind_ko}: {detail.strip()}." if detail else f"{event.kind_ko}."
 
 
 def _local_participant_sentence(participants: tuple[TurnSceneParticipant, ...]) -> str:
     if not participants:
         return ""
-    entries = ", ".join(
-        f"{item.name_ko}({item.role_ko}, {item.service_ko})" for item in participants
+    return " ".join(
+        f"{item.name_ko}({item.role_ko}): “필요한 것이 있으면 말해 주게.”"
+        for item in participants
     )
-    return f"현장에는 {entries}도 함께 있었다."
 
 
-def _local_interaction_sentence(interaction: ResolvedInteraction) -> str:
-    choices = " · ".join(interaction.prompt_response_labels_ko)
-    effects = f" {'; '.join(interaction.effect_facts_ko)}." if interaction.effect_facts_ko else ""
-    return (
-        f"{interaction.npc_name_ko}와 ‘{interaction.title_ko}’에 관해 {choices} 선택이 이어졌고, "
-        f"결과는 {interaction.outcome_ko}으로 확정되었다.{effects}"
+def _local_interaction_sentence(
+    interaction: ResolvedInteraction, request: TurnStoryRequest
+) -> str:
+    participant = next(
+        (item for item in request.scene_participants if item.name_ko == interaction.npc_name_ko),
+        None,
     )
+    role = participant.role_ko if participant is not None else "상주인"
+    actor = request.selected_actions[0].actor_name_ko
+    choices = " 다음에는 ".join(
+        f"‘{label}’" for label in interaction.prompt_response_labels_ko
+    )
+    effects = " ".join(_local_effect_sentence(effect) for effect in interaction.effect_facts_ko)
+    return " ".join(
+        part
+        for part in (
+            f"{interaction.npc_name_ko}({role}): “{interaction.title_ko}, 함께 확인해 주겠나?”",
+            f"{actor}, {choices} 쪽으로 손을 움직였다.",
+            effects,
+        )
+        if part
+    )
+
+
+def _local_effect_sentence(effect: str) -> str:
+    if effect.startswith("골드 +"):
+        return f"{effect}가 주머니에 더해졌다."
+    if effect.startswith("골드 -"):
+        return f"{effect}가 값을 치르는 데 쓰였다."
+    if effect.startswith("자원 +"):
+        return f"{effect}가 짐에 들어왔다."
+    return f"{effect}."

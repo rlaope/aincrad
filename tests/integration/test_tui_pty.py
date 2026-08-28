@@ -178,6 +178,7 @@ def test_real_pty_orrin_incident_walk_completes_one_tick_and_replays(tmp_path: P
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
+        env={**os.environ, "AINCRAD_STORY_MODE": "local"},
         close_fds=True,
     )
     capture = TerminalCapture(master_fd, columns=80, lines=24)
