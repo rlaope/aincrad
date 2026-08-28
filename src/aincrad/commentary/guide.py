@@ -118,17 +118,19 @@ def _drain(stream: BinaryIO, capture: _BoundedCapture) -> None:
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
-    with suppress(ProcessLookupError):
+    with suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGTERM)
     with suppress(subprocess.TimeoutExpired):
         process.wait(timeout=0.25)
-    with suppress(ProcessLookupError):
+    with suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGKILL)
     try:
         process.wait(timeout=1.0)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=1.0)
+        with suppress(ProcessLookupError, PermissionError):
+            process.kill()
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1.0)
 
 
 @dataclass(frozen=True, slots=True)

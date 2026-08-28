@@ -22,7 +22,7 @@ def test_turn_story_explains_the_delegated_action_and_concrete_result() -> None:
         _starting_world(CharacterClass.WARRIOR, "테스트용사"),
         seed=7,
         hours=1,
-        chooser=lambda _world, actor_id: ActionIntent(actor_id, ActionKind.WAIT),
+        chooser=lambda _world, actor_id: ActionIntent(actor_id, ActionKind.OBSERVE),
         direct_hero_only=True,
     )
     trace = result.traces[-1]
@@ -36,9 +36,8 @@ def test_turn_story_explains_the_delegated_action_and_concrete_result() -> None:
     rendered = "\n".join(story)
 
     assert story[0] == "1일차 00:00 · 잿불마을"
-    assert "주변 상황을 살핀 테스트용사는 잿불마을에 남아" in rendered
-    assert "대기" in rendered
-    assert "경험치" in rendered
+    assert "주변 상황을 살핀 테스트용사는 잿불마을에서 ‘온천 관찰’ 행동을 마쳤다" in rendered
+    assert "경험치" not in rendered
     assert "HP 24/24" in rendered
     assert "MP 8/8" in rendered
     assert "새로운 의뢰나 동료의 합류 같은 사건은 일어나지 않았다" in rendered
@@ -47,6 +46,58 @@ def test_turn_story_explains_the_delegated_action_and_concrete_result() -> None:
     assert "테스트용사은" not in rendered
     assert "경험치 1를" not in rendered
     assert "Lv.1였다" not in rendered
+
+
+def test_turn_story_names_the_resolved_contextual_action_without_raw_ids() -> None:
+    result = _run_hours(
+        _starting_world(CharacterClass.WARRIOR, "유리별"),
+        seed=7,
+        hours=1,
+        chooser=lambda _world, actor_id: ActionIntent(actor_id, ActionKind.OBSERVE),
+        direct_hero_only=True,
+    )
+    trace = result.traces[-1]
+
+    rendered = "\n".join(
+        render_turn_story(
+            result.final_state,
+            trace.action_events,
+            controllers={HERO_ID: "user"},
+            story_event_text=None,
+        )
+    )
+
+    assert "온천 관찰" in rendered
+    assert "잿불마을" in rendered
+    assert "emberfall-observe-warm-spring" not in rendered
+    assert "action_key" not in rendered
+
+
+def test_turn_story_attributes_encounter_damage_to_combat_not_movement() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    hero = replace(world.adventurers[HERO_ID], location_id="vault-1")
+    world = replace(world, adventurers={hero.id: hero})
+    result = _run_hours(
+        world,
+        seed=29,
+        hours=1,
+        chooser=lambda _world, actor_id: ActionIntent(actor_id, ActionKind.FIGHT),
+        direct_hero_only=True,
+    )
+    trace = result.traces[-1]
+
+    rendered = "\n".join(
+        render_turn_story(
+            result.final_state,
+            trace.action_events,
+            controllers={HERO_ID: "user"},
+            story_event_text=None,
+        )
+    )
+
+    assert "전투" in rendered
+    assert "1의 피해" in rendered
+    assert "이동 도중" not in rendered
 
 
 def test_turn_story_narrates_movement_destination_and_hazard_result() -> None:
@@ -76,6 +127,33 @@ def test_turn_story_narrates_movement_destination_and_hazard_result() -> None:
     assert "위험을 헤치며" in rendered
     assert "피해" in rendered
     assert "HP" in rendered
+
+
+def test_turn_story_uses_the_correct_direction_particle_for_vowel_ending_place() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    result = _run_hours(
+        world,
+        seed=7,
+        hours=1,
+        chooser=lambda _world, actor_id: ActionIntent(
+            actor_id,
+            ActionKind.MOVE,
+            target_location_id="emberfall-shop",
+        ),
+        direct_hero_only=True,
+    )
+
+    rendered = "\n".join(
+        render_turn_story(
+            result.final_state,
+            result.events,
+            controllers={HERO_ID: "user"},
+            story_event_text=None,
+        )
+    )
+
+    assert "잿불창고 교역소로 향했다" in rendered
+    assert "잿불창고 교역소으로" not in rendered
 
 
 def test_companion_death_does_not_claim_the_hero_journey_ended() -> None:

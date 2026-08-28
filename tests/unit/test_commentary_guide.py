@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import aincrad.commentary.guide as guide_module
 from aincrad.commentary.guide import (
     DestinationCandidate,
     HermesKimiCommentaryAdapter,
@@ -231,6 +232,31 @@ def test_adapter_timeout_kills_its_process_group_without_survivor(tmp_path: Path
     finally:
         if child_pid_file.exists():
             _stop_process(int(child_pid_file.read_text(encoding="utf-8")))
+
+
+def test_commentary_process_cleanup_tolerates_reaped_group_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ReapedProcess:
+        pid = 4321
+
+        def __init__(self) -> None:
+            self.wait_calls = 0
+
+        def wait(self, timeout: float) -> int:
+            self.wait_calls += 1
+            return 0
+
+    process = ReapedProcess()
+
+    def denied_killpg(_pid: int, _signal: int) -> None:
+        raise PermissionError("process group already reaped")
+
+    monkeypatch.setattr(guide_module.os, "killpg", denied_killpg)
+
+    guide_module._terminate_process_group(process)  # type: ignore[arg-type]
+
+    assert process.wait_calls == 2
 
 
 def _request() -> MovementCommentaryRequest:

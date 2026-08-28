@@ -51,3 +51,16 @@ def location_description_ko(location_id: str) -> str:
     """Return public Korean physical context for a canonical location id."""
 
     return _LOCATION_DESCRIPTIONS_KO.get(location_id, "확인된 지형 정보가 없습니다.")
+
+
+def location_direction_ko(location_id: str) -> str:
+    """Return a localized location name with the correct Korean 로/으로 particle."""
+
+    name = location_name_ko(location_id)
+    final = name[-1]
+    if "가" <= final <= "힣":
+        jongseong = (ord(final) - ord("가")) % 28
+        particle = "로" if jongseong in {0, 8} else "으로"
+    else:
+        particle = "으로"
+    return f"{name}{particle}"

@@ -101,7 +101,7 @@ def test_headless_event_projection_hides_internal_location_and_detail_keys() -> 
     message = _event_view(result.events[0], result.final_state).message
 
     assert "한별: 고요한 심지 여관으로 이동했다." in message
-    assert "경험치" in message
+    assert "경험치" not in message
     assert "destination=" not in message
     assert "emberfall-inn" not in message
     assert "xp_awarded" not in message

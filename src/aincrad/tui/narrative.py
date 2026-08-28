@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from aincrad.domain import ActionKind, ActionRejected, ActionSucceeded, DomainEvent, WorldState
+from aincrad.content import contextual_action_for_intent
+from aincrad.domain import (
+    ActionIntent,
+    ActionKind,
+    ActionRejected,
+    ActionSucceeded,
+    DomainEvent,
+    WorldState,
+)
 from aincrad.domain.display import safe_terminal_text
 
-from .localization import location_name_ko
+from .localization import location_direction_ko, location_name_ko
 
 NO_STORY_EVENT_TEXT = (
     "그 한 시간 동안 새로운 의뢰나 동료의 합류 같은 사건은 일어나지 않았다."
@@ -21,6 +29,9 @@ _REJECTION_TEXT = {
     "trade_not_allowed": "이곳에서는 거래할 수 없었기 때문에",
     "invalid_quantity": "거래 수량이 올바르지 않았기 때문에",
     "insufficient_resources": "팔 자원이 부족했기 때문에",
+    "insufficient_gold": "필요한 금화가 부족했기 때문에",
+    "completed_contract_not_representable": "완료한 의뢰가 기록되어 있지 않았기 때문에",
+    "action_not_available_at_location": "이 장소에서 할 수 있는 행동이 아니었기 때문에",
     "invalid_action": "세계의 규칙에 맞지 않는 행동이었기 때문에",
 }
 
@@ -72,6 +83,7 @@ def _topic_particle(text: str) -> str:
 
 
 def _action_sentence(
+    world: WorldState,
     actor_name: str,
     location_id: str,
     event: DomainEvent,
@@ -81,10 +93,21 @@ def _action_sentence(
     subject = f"{actor_name}{_topic_particle(actor_name)}"
     lead = f"주변 상황을 살핀 {subject}" if delegated else subject
     location = location_name_ko(location_id)
+    contextual = contextual_action_for_intent(
+        world,
+        ActionIntent(
+            event.adventurer_id,
+            event.action,
+            target_location_id=event.target_location_id,
+            quantity=event.quantity,
+        ),
+    )
     if isinstance(event, ActionRejected):
         reason = _REJECTION_TEXT.get(event.reason, "그 행동을 실행할 수 없었기 때문에")
         action = (
-            _ACTION_TEXT.get(event.action, "행동")
+            contextual.label_ko
+            if contextual is not None
+            else _ACTION_TEXT.get(event.action, "행동")
             if isinstance(event.action, ActionKind)
             else "행동"
         )
@@ -96,7 +119,7 @@ def _action_sentence(
     details = event_detail_map(event)
     if action is ActionKind.MOVE:
         destination_id = event.target_location_id or location_id
-        return f"{lead} 길을 골라 {location_name_ko(destination_id)}으로 향했다."
+        return f"{lead} 길을 골라 {location_direction_ko(destination_id)} 향했다."
     if action is ActionKind.REST:
         return f"{lead} {location}의 안전한 자리를 찾아 숨을 고르고 장비를 정돈했다."
     if action is ActionKind.GATHER:
@@ -105,6 +128,8 @@ def _action_sentence(
     if action is ActionKind.TRADE:
         sold = details.get("resources_sold", str(event.quantity))
         return f"{lead} {location}의 상인과 흥정해 모아 둔 자원 {sold}개를 팔았다."
+    if contextual is not None:
+        return f"{lead} {location}에서 ‘{contextual.label_ko}’ 행동을 마쳤다."
     return f"{lead} {location}에 남아 서두르지 않고 주변의 움직임을 지켜보며 대기했다."
 
 
@@ -119,7 +144,14 @@ def _result_sentence(world: WorldState, event: DomainEvent) -> str:
     changes: list[str] = []
     damage = detail_non_negative_int(details, "damage")
     if damage:
-        changes.append(f"이동 도중 위험을 헤치며 {damage}의 피해를 입었다")
+        damage_context = (
+            "이동 도중 위험을 헤치며"
+            if event.action is ActionKind.MOVE
+            else "교전 중 적의 공격을 받아"
+            if event.action in {ActionKind.FIGHT, ActionKind.CHALLENGE}
+            else "위험을 헤치며"
+        )
+        changes.append(f"{damage_context} {damage}의 피해를 입었다")
     hp_restored = detail_non_negative_int(details, "hp_restored")
     mp_restored = detail_non_negative_int(details, "mp_restored")
     if hp_restored or mp_restored:
@@ -171,6 +203,7 @@ def render_turn_story(
         lines.extend(
             (
                 _action_sentence(
+                    world,
                     safe_terminal_text(actor.name),
                     actor.location_id,
                     event,
