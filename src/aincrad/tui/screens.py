@@ -34,6 +34,8 @@ def render_status_context(
     max_mp: int,
     level: int,
     party_size: int,
+    gold: int,
+    resources: int,
     width: int,
 ) -> tuple[str, ...]:
     """Project the fixed decision context for action and continue screens."""
@@ -45,9 +47,10 @@ def render_status_context(
         f"HP {hp_value}/{max_hp} · MP {mp}/{max_mp} · "
         f"Lv.{level} · 파티 {party_size}명"
     )
+    belongings = f"소지품: 자원 {resources}개 · 소지금 {gold} G"
     if width < 56:
-        return (time_location, vitals)
-    return (f"{time_location} · {vitals}",)
+        return (time_location, vitals, belongings)
+    return (f"{time_location} · {vitals}", belongings)
 
 
 def _safe_wrapped(text: str, width: int) -> list[str]:

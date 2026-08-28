@@ -74,6 +74,8 @@ def test_status_context_keeps_decision_information_at_wide_and_narrow_widths() -
         max_mp=8,
         level=2,
         party_size=1,
+        gold=17,
+        resources=3,
         width=80,
     )
     narrow = render_status_context(
@@ -86,13 +88,19 @@ def test_status_context_keeps_decision_information_at_wide_and_narrow_widths() -
         max_mp=8,
         level=2,
         party_size=1,
+        gold=17,
+        resources=3,
         width=40,
     )
 
-    assert wide == ("1일차 03:00 · Emberfall · HP !6/24 · MP 8/8 · Lv.2 · 파티 1명",)
+    assert wide == (
+        "1일차 03:00 · Emberfall · HP !6/24 · MP 8/8 · Lv.2 · 파티 1명",
+        "소지품: 자원 3개 · 소지금 17 G",
+    )
     assert narrow == (
         "1일차 03:00 · Emberfall",
         "HP !6/24 · MP 8/8 · Lv.2 · 파티 1명",
+        "소지품: 자원 3개 · 소지금 17 G",
     )
 
 

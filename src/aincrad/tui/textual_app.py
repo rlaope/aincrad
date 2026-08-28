@@ -134,27 +134,43 @@ class SafeInput(Input):
         super().replace(sanitize_terminal_text(text), start, end)
 
 
-class NameScreen(ModalScreen[str | None]):
+class TextInputScreen(ModalScreen[str | None]):
+    """Single-line natural text input with caller-defined copy and validation."""
+
+    DEFAULT_PLACEHOLDER = "자유롭게 입력하세요"
+    DEFAULT_HINT = "Enter 확정 · Esc 뒤로"
     BINDINGS = [("escape", "cancel", "뒤로")]
 
-    def __init__(self, title: str, *, subtitle: str, validate: Validator) -> None:
+    def __init__(
+        self,
+        title: str,
+        *,
+        subtitle: str,
+        validate: Validator,
+        placeholder: str = "",
+        hint: str = "",
+    ) -> None:
         super().__init__()
         self._title = sanitize_terminal_text(title)
         self._subtitle = sanitize_terminal_text(subtitle)
         self._validate = validate
+        self._placeholder = (
+            sanitize_terminal_text(placeholder) if placeholder else self.DEFAULT_PLACEHOLDER
+        )
+        self._hint = sanitize_terminal_text(hint) if hint else self.DEFAULT_HINT
 
     def compose(self) -> ComposeResult:
         with Container(id="dialog"):
             yield Static("◆ THE GLASS FRONTIER", id="brand", markup=False)
             yield Static(self._title, id="screen-title", markup=False)
             yield Static(self._subtitle, id="subtitle", markup=False)
-            yield SafeInput(placeholder="이름을 입력하세요", id="name")
-            yield Label("한글·영문 최대 24칸 · Enter 확정 · Esc 뒤로", id="hint")
+            yield SafeInput(placeholder=self._placeholder, id="text-input")
+            yield Label(self._hint, id="hint")
             yield Label("", id="error")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#name", Input).focus()
+        self.query_one("#text-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         try:
@@ -166,6 +182,9 @@ class NameScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+NameScreen = TextInputScreen
 
 
 class TextScreen(ModalScreen[None]):
@@ -202,49 +221,86 @@ class TextScreen(ModalScreen[None]):
 
 
 class StoryScreen(ModalScreen[None]):
-    """Reveal one resolved hourly scene with readable typewriter cadence."""
+    """Reveal one resolved hourly scene with readable typewriter cadence.
+
+    The screen can be pushed before its content exists: pass ``body_lines=None``
+    to mount a reader-friendly loading shell, then call :meth:`begin_story`
+    (on the app thread) once the text is ready to start the typewriter.
+    """
 
     CHARACTER_DELAY_SECONDS = 0.03
     PUNCTUATION_DELAY_SECONDS = 0.15
     PARAGRAPH_DELAY_SECONDS = 0.2
+    LOADING_BODY = "이야기를 준비하는 중입니다…"
+    LOADING_HINT = "장면을 준비하고 있습니다 · 잠시만 기다려 주세요"
     BINDINGS = [
         ("w", "scroll_up", "위"),
         ("s", "scroll_down", "아래"),
         ("enter", "advance", "전체 표시/계속"),
     ]
 
-    def __init__(self, title: str, body_lines: Sequence[str]) -> None:
+    def __init__(self, title: str, body_lines: Sequence[str] | None = None) -> None:
         super().__init__()
         self._title = sanitize_terminal_text(title)
-        self._full_text = "\n".join(sanitize_terminal_text(line) for line in body_lines)
+        self._full_text: str | None = (
+            None
+            if body_lines is None
+            else "\n".join(sanitize_terminal_text(line) for line in body_lines)
+        )
         self._revealed_count = 0
+        self._shell_visible = threading.Event()
+
+    @property
+    def is_loading(self) -> bool:
+        return self._full_text is None
 
     @property
     def revealed_text(self) -> str:
+        if self._full_text is None:
+            return ""
         return self._full_text[: self._revealed_count]
 
     @property
     def is_complete(self) -> bool:
-        return self._revealed_count >= len(self._full_text)
+        return self._full_text is not None and self._revealed_count >= len(self._full_text)
+
+    def wait_mounted(self, timeout: float) -> bool:
+        """Block a worker thread until the screen is mounted and visible."""
+        return self._shell_visible.wait(timeout)
 
     def compose(self) -> ComposeResult:
+        loading = self.is_loading
         with Container(id="dialog"):
             yield Static("◆ THE GLASS FRONTIER", id="brand", markup=False)
             yield Static(self._title, id="screen-title", markup=False)
             with VerticalScroll(id="text-scroll"):
-                yield Static("", id="story-text", markup=False)
+                yield Static(
+                    self.LOADING_BODY if loading else "",
+                    id="story-text",
+                    markup=False,
+                )
             yield Static(
-                "한 글자씩 재생 중 · Enter 전체 표시",
+                self.LOADING_HINT if loading else "한 글자씩 재생 중 · Enter 전체 표시",
                 id="hint",
                 markup=False,
             )
         yield Footer()
 
     def on_mount(self) -> None:
+        if not self.is_loading:
+            self.set_timer(self.CHARACTER_DELAY_SECONDS, self._reveal_next)
+        self._shell_visible.set()
+
+    def begin_story(self, body_lines: Sequence[str]) -> None:
+        """Swap the loading shell for real content and start the typewriter."""
+        self._full_text = "\n".join(sanitize_terminal_text(line) for line in body_lines)
+        self._revealed_count = 0
+        self.query_one("#story-text", Static).update("")
+        self.query_one("#hint", Static).update("한 글자씩 재생 중 · Enter 전체 표시")
         self.set_timer(self.CHARACTER_DELAY_SECONDS, self._reveal_next)
 
     def _reveal_next(self) -> None:
-        if self.is_complete:
+        if self._full_text is None or self.is_complete:
             return
         self._revealed_count += 1
         self.query_one("#story-text", Static).update(self.revealed_text)
@@ -266,8 +322,10 @@ class StoryScreen(ModalScreen[None]):
         self.query_one("#hint", Static).update("W/S 스크롤 · Enter 계속")
 
     def action_advance(self) -> None:
+        if self.is_loading:
+            return
         if not self.is_complete:
-            self._revealed_count = len(self._full_text)
+            self._revealed_count = len(self._full_text or "")
             self.query_one("#story-text", Static).update(self.revealed_text)
             self.query_one("#text-scroll", VerticalScroll).scroll_end(animate=False)
             self._show_continue_hint()
@@ -329,14 +387,59 @@ class TextualInteraction:
         *,
         subtitle: str,
         validate: Validator,
+        placeholder: str = "",
+        hint: str = "",
     ) -> str | None:
-        return self._show(NameScreen(title, subtitle=subtitle, validate=validate))
+        return self._show(
+            TextInputScreen(
+                title,
+                subtitle=subtitle,
+                validate=validate,
+                placeholder=placeholder,
+                hint=hint,
+            )
+        )
 
     def show_text(self, title: str, body_lines: Sequence[str]) -> None:
         self._show(TextScreen(title, body_lines))
 
     def show_story(self, title: str, body_lines: Sequence[str]) -> None:
         self._show(StoryScreen(title, body_lines))
+
+    def show_story_from(
+        self,
+        title: str,
+        producer: Callable[[], Sequence[str]],
+    ) -> None:
+        """Push a visible loading story shell, then reveal producer's text.
+
+        The StoryScreen is pushed and mounted BEFORE ``producer`` runs, so a
+        slow provider never leaves the previous screen looking frozen. The
+        producer executes on the calling session worker thread; the mounted
+        screen is updated via the Textual app thread. If ``producer`` raises,
+        the loading screen is dismissed and the exception propagates to the
+        caller, which may then fall back to :meth:`show_story`.
+        """
+        screen = StoryScreen(title, None)
+        completed = threading.Event()
+
+        def receive(_value: None) -> None:
+            completed.set()
+
+        self._app.call_from_thread(self._app.push_screen, screen, receive)
+        while not screen.wait_mounted(0.05):
+            if self._closed.is_set():
+                raise EOFError("interactive terminal closed")
+        try:
+            body_lines = tuple(producer())
+        except BaseException:
+            self._app.call_from_thread(screen.dismiss, None)
+            completed.wait(2.0)
+            raise
+        self._app.call_from_thread(screen.begin_story, body_lines)
+        while not completed.wait(0.05):
+            if self._closed.is_set():
+                raise EOFError("interactive terminal closed")
 
 
 class AincradTextualApp(App[int]):
@@ -379,7 +482,11 @@ class AincradTextualApp(App[int]):
     ListItem {
         height: auto;
         padding: 0 2;
+        margin-bottom: 1;
         color: #c7c0b2;
+    }
+    ListItem:last-of-type {
+        margin-bottom: 0;
     }
     .option-label, .option-description {
         height: auto;

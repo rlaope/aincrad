@@ -25,13 +25,7 @@ from aincrad.cli import (
     main,
 )
 from aincrad.domain import ActionIntent, ActionKind, CharacterClass
-from aincrad.domain.identity import (
-    CharacterIdentityProfile,
-    CoreValue,
-    InquiryStance,
-    RelationshipStance,
-    RiskAttitude,
-)
+from aincrad.domain.identity import CharacterIdentityProfile
 from aincrad.history import HistoryArchive
 from aincrad.persistence import GENESIS_HASH, EventLog, StoredEvent, to_json_value
 from aincrad.simulation import SimulationScheduler, create_initial_world
@@ -115,10 +109,8 @@ def test_identity_profile_round_trips_through_v3_log_and_history(tmp_path: Path)
     event_log = tmp_path / "events.jsonl"
     history_root = tmp_path / "history"
     identity = CharacterIdentityProfile(
-        inquiry_stance=InquiryStance.ANALYTICAL,
-        risk_attitude=RiskAttitude.CAREFUL,
-        core_value=CoreValue.HARMONY,
-        relationship_stance=RelationshipStance.COOPERATIVE,
+        personality_description="차분히 분석하고 관찰한 뒤 신중하게 행동한다.",
+        traits_description="동료와 조화를 이루며 약속을 끝까지 지킨다.",
     )
 
     simulated = _default_run(
@@ -143,10 +135,8 @@ def test_identity_profile_round_trips_through_v3_log_and_history(tmp_path: Path)
     assert replayed.adventurers == simulated.adventurers
     assert HistoryArchive(history_root).load_run(1).metadata["identity"] == identity.to_json()
     history_text = _render_history_details(HistoryArchive(history_root), 1)
-    assert "탐구 성향: 차분히 분석하고 관찰한다" in history_text
-    assert "위험 태도: 신중하게 안전을 지킨다" in history_text
-    assert "핵심 가치: 조화로운 삶" in history_text
-    assert "관계 성향: 힘을 모아 협력한다" in history_text
+    assert "성격: 차분히 분석하고 관찰한 뒤 신중하게 행동한다." in history_text
+    assert "특징: 동료와 조화를 이루며 약속을 끝까지 지킨다." in history_text
 
 
 def test_simulate_parser_accepts_explicit_hero_name_option() -> None:

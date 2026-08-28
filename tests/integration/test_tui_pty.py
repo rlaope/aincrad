@@ -125,9 +125,10 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         os.write(master_fd, b"\r")
         capture.read_until("주인공 이름")
         os.write(master_fd, "테스트용사\r".encode())
-        for title in ("탐구 성향", "위험 태도", "핵심 가치", "관계 성향"):
-            capture.read_until(title)
-            os.write(master_fd, b"\r")
+        capture.read_until("주인공의 성격")
+        os.write(master_fd, "낯선 사람에게 먼저 말을 걸지만 위험은 신중하게 살핀다.\r".encode())
+        capture.read_until("주인공의 특징")
+        os.write(master_fd, "긴장하면 탁자를 두드리고 약속을 중요하게 여긴다.\r".encode())
         action = capture.read_until("테스트용사의 행동")
         assert "1일차 00:00" in action
         assert "잿불마을" in action
@@ -140,7 +141,7 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         assert "한 글자씩 재생 중" in story
         assert "판정 기록" not in story
         os.write(master_fd, b"\r")
-        complete_story = capture.read_until("판정 기록")
+        complete_story = capture.read_until("이번 시간")
         assert "향했다" in complete_story
         assert "경험치" not in complete_story
         assert "테스트용사은" not in complete_story
@@ -212,7 +213,7 @@ def test_real_pty_reflows_while_preserving_menu_selection(tmp_path: Path) -> Non
     try:
         capture.read_until("메인 메뉴")
         os.write(master_fd, b"ss")
-        capture.read_until("히스토리")
+        capture.read_until("지난 이야기")
 
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 40, 0, 0))
         capture.resize(columns=40, lines=24)
@@ -220,7 +221,7 @@ def test_real_pty_reflows_while_preserving_menu_selection(tmp_path: Path) -> Non
         narrow = capture.read_until("메인 메뉴")
         assert capture.screen.columns == 40
         assert all("\ufffd" not in row for row in capture.rows)
-        assert "히스토리" in narrow
+        assert "지난 이야기" in narrow
         os.write(master_fd, b"\r")
         capture.read_until("기록된 회차가 없습니다")
         os.write(master_fd, b"\r")

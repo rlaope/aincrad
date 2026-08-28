@@ -43,14 +43,9 @@ from aincrad.domain import (
 )
 from aincrad.domain.identity import (
     HERO_ID,
-    IDENTITY_DIMENSIONS,
     CharacterIdentityError,
     CharacterIdentityProfile,
-    CoreValue,
     HeroNameError,
-    InquiryStance,
-    RelationshipStance,
-    RiskAttitude,
     validate_hero_name,
 )
 from aincrad.domain.rules import apply_intent
@@ -221,10 +216,8 @@ _CLASS_LABELS = {
     character_class: label for character_class, label, _, _ in _CHARACTER_OPTIONS
 }
 _DEFAULT_IDENTITY_PROFILE = CharacterIdentityProfile(
-    inquiry_stance=InquiryStance.CURIOUS,
-    risk_attitude=RiskAttitude.BALANCED,
-    core_value=CoreValue.GROWTH,
-    relationship_stance=RelationshipStance.COOPERATIVE,
+    personality_description="낯선 것을 호기심 있게 살피되 위험 앞에서는 신중하게 판단한다.",
+    traits_description="동료의 의견을 존중하고 작은 단서도 놓치지 않으려 한다.",
 )
 _CHARACTER_DESCRIPTIONS = {
     CharacterClass.WARRIOR: "근접 전투와 생존의 균형이 좋습니다",
@@ -235,36 +228,35 @@ _CHARACTER_DESCRIPTIONS = {
 
 
 def _prompt_identity_textual(interaction: TextualInteraction) -> CharacterIdentityProfile:
-    enum_types = {
-        "inquiry_stance": InquiryStance,
-        "risk_attitude": RiskAttitude,
-        "core_value": CoreValue,
-        "relationship_stance": RelationshipStance,
-    }
-    selected: dict[str, object] = {}
-    for dimension in IDENTITY_DIMENSIONS:
-        enum_type = enum_types[dimension.key]
-        answer = interaction.choose(
-            dimension.label,
-            tuple(
-                MenuOption(
-                    option.label,
-                    "해설의 관점만 조정하며 세계 판정에는 영향을 주지 않습니다",
-                    enum_type(option.value),
-                )
-                for option in dimension.options
-            ),
-            subtitle=dimension.question,
-            allow_back=True,
-        )
-        if answer is None:
-            return _DEFAULT_IDENTITY_PROFILE
-        selected[dimension.key] = answer
+    def validate_personality(raw: str) -> str:
+        return CharacterIdentityProfile(
+            personality_description=raw,
+            traits_description=_DEFAULT_IDENTITY_PROFILE.traits_description,
+        ).personality_description
+
+    def validate_traits(raw: str) -> str:
+        return CharacterIdentityProfile(
+            personality_description=_DEFAULT_IDENTITY_PROFILE.personality_description,
+            traits_description=raw,
+        ).traits_description
+
+    personality = interaction.input_text(
+        "주인공의 성격",
+        subtitle="이 인물이 어떤 마음가짐으로 사람과 낯선 상황을 대하는지 자유롭게 적어 주세요",
+        validate=validate_personality,
+    )
+    if personality is None:
+        return _DEFAULT_IDENTITY_PROFILE
+    traits = interaction.input_text(
+        "주인공의 특징",
+        subtitle="말투, 습관, 장점, 약점처럼 이야기에서 드러날 특징을 자유롭게 적어 주세요",
+        validate=validate_traits,
+    )
+    if traits is None:
+        return _DEFAULT_IDENTITY_PROFILE
     return CharacterIdentityProfile(
-        inquiry_stance=selected["inquiry_stance"],  # type: ignore[arg-type]
-        risk_attitude=selected["risk_attitude"],  # type: ignore[arg-type]
-        core_value=selected["core_value"],  # type: ignore[arg-type]
-        relationship_stance=selected["relationship_stance"],  # type: ignore[arg-type]
+        personality_description=personality,
+        traits_description=traits,
     )
 
 
@@ -535,14 +527,10 @@ def _choose_ai_intent(world: WorldState, actor_id: str) -> ActionIntent:
 
 
 def _identity_labels_ko(profile: CharacterIdentityProfile) -> tuple[str, ...]:
-    labels: list[str] = []
-    for dimension in IDENTITY_DIMENSIONS:
-        selected_value = getattr(profile, dimension.key).value
-        selected_label = next(
-            option.label for option in dimension.options if option.value == selected_value
-        )
-        labels.append(f"{dimension.label}: {selected_label}")
-    return tuple(labels)
+    return (
+        f"성격: {profile.personality_description}",
+        f"특징: {profile.traits_description}",
+    )
 
 
 def _movement_commentary_request(
@@ -713,6 +701,8 @@ def _prompt_for_intent_menu(
         max_mp=adventurer.stats.max_mp,
         level=adventurer.level,
         party_size=party_size,
+        gold=adventurer.gold,
+        resources=adventurer.resources,
         width=frame_width,
     )
     choices = tuple(
@@ -775,6 +765,8 @@ def _prompt_for_intent_textual(
         max_mp=adventurer.stats.max_mp,
         level=adventurer.level,
         party_size=party_size,
+        gold=adventurer.gold,
+        resources=adventurer.resources,
         width=80,
     )
     facility_labels = {
@@ -1153,6 +1145,8 @@ def _continue_context(
         max_mp=hero.stats.max_mp,
         level=hero.level,
         party_size=sum(world.adventurers[item].alive for item in party.member_ids),
+        gold=hero.gold,
+        resources=hero.resources,
         width=width,
     )
     return (*status, "", "방금 끝난 한 시간의 기록을 확인했습니다.")
@@ -1510,19 +1504,25 @@ def _default_run(
                 ),
                 None,
             )
-            story_projection = {
-                "kind": "story_resolution",
-                "scene": template.display_text_ko if template is not None else NO_STORY_EVENT_TEXT,
-                "opportunity": trace.story_intent.kind.value,
-                "evidence_ids": [
-                    value
-                    for value in (
-                        trace.story_intent.candidate_id,
-                        trace.story_resolution.event.template_id,
-                    )
-                    if value is not None
-                ],
-            }
+            story_projections = (
+                (
+                    {
+                        "kind": "story_resolution",
+                        "scene": template.display_text_ko,
+                        "opportunity": trace.story_intent.kind.value,
+                        "evidence_ids": [
+                            value
+                            for value in (
+                                trace.story_intent.candidate_id,
+                                trace.story_resolution.event.template_id,
+                            )
+                            if value is not None
+                        ],
+                    },
+                )
+                if template is not None
+                else ()
+            )
             archive.append_hourly(
                 current_run_number,
                 {
@@ -1531,7 +1531,7 @@ def _default_run(
                     "tick": completed_hours - 1,
                     "events": [
                         *(to_json_value(event) for event in hourly.events),
-                        story_projection,
+                        *story_projections,
                     ],
                     "party": [
                         {
@@ -1652,18 +1652,22 @@ def _default_run(
                 selected_identity,
                 tuple(recent_scene_summaries_ko[-8:]),
             )
-            try:
-                projected = story_provider(request)
-            except Exception:
-                projected = local_turn_story(request)
-            interaction.show_story(
-                f"{canonical_story[0]} · 한 시간의 이야기",
-                (
+
+            def produce_story_lines() -> tuple[str, ...]:
+                try:
+                    projected = story_provider(request)
+                except Exception:
+                    projected = local_turn_story(request)
+                return (
                     *projected.story_ko.splitlines(),
                     "",
-                    "── 판정 기록 ──",
+                    "── 이번 시간 ──",
                     *canonical_story[1:],
-                ),
+                )
+
+            interaction.show_story_from(
+                f"{canonical_story[0]} · 한 시간의 이야기",
+                produce_story_lines,
             )
             recent_scene_summaries_ko.append(
                 sanitize_terminal_text(" ".join(canonical_story[1:]))[:800]
@@ -2326,13 +2330,40 @@ def _render_history_details(archive: HistoryArchive, run_number: int) -> str:
             hour = record.payload.get("hour", "?")
             hour_label = f"{hour:02d}" if type(hour) is int else "?"
             lines.append(f"\n── {day}일차 {hour_label}:00 ──")
+            party = record.payload.get("party", [])
+            actor_names = (
+                {
+                    raw_member.get("id"): _history_text(
+                        raw_member.get("name", "알 수 없음")
+                    )
+                    for raw_member in party
+                    if isinstance(raw_member, dict) and isinstance(raw_member.get("id"), str)
+                }
+                if isinstance(party, list)
+                else {}
+            )
             raw_events = record.payload.get("events", [])
             if isinstance(raw_events, list):
                 for raw_event in raw_events:
-                    if (
-                        not isinstance(raw_event, dict)
-                        or raw_event.get("kind") != "story_resolution"
-                    ):
+                    if not isinstance(raw_event, dict):
+                        continue
+                    if raw_event.get("kind") != "story_resolution":
+                        action = raw_event.get("action")
+                        if not isinstance(action, str):
+                            continue
+                        actor_id = raw_event.get("adventurer_id")
+                        actor_name = (
+                            actor_names.get(actor_id, hero_name)
+                            if isinstance(actor_id, str)
+                            else hero_name
+                        )
+                        target = raw_event.get("target_location_id")
+                        if action == ActionKind.MOVE.value and isinstance(target, str):
+                            action_text = f"{location_direction_ko(target)} 이동했다."
+                        else:
+                            action_label = _ACTION_LABELS.get(action, _history_text(action))
+                            action_text = f"‘{action_label}’에 나섰다."
+                        lines.append(f"[행동] {actor_name} — {action_text}")
                         continue
                     scene = _history_text(raw_event.get("scene", NO_STORY_EVENT_TEXT))
                     opportunity_value = raw_event.get("opportunity", "no_op")
@@ -2355,7 +2386,6 @@ def _render_history_details(archive: HistoryArchive, run_number: int) -> str:
                     lines.append(f"[이야기] {scene} · {opportunity}")
                     if evidence_text:
                         lines.append(f"근거 ID: {evidence_text}")
-            party = record.payload.get("party", [])
             if isinstance(party, list):
                 for raw_member in party:
                     if not isinstance(raw_member, dict):
@@ -2583,21 +2613,17 @@ def _run_home_textual(
     story_provider: StoryProvider | None = None,
 ) -> int:
     commentary_provider: CommentaryProvider = deterministic_commentary
-    selected_story_provider: StoryProvider = (
-        local_turn_story
-        if story_provider is None and os.environ.get("AINCRAD_STORY_MODE") == "local"
-        else HermesKimiTurnStoryAdapter().story
-        if story_provider is None
-        else story_provider
+    rich_story_provider: StoryProvider = (
+        HermesKimiTurnStoryAdapter().story if story_provider is None else story_provider
     )
+    use_rich_story = not (
+        story_provider is None and os.environ.get("AINCRAD_STORY_MODE") == "local"
+    )
+    selected_story_provider = rich_story_provider if use_rich_story else local_turn_story
     home_options = (
         MenuOption("새 모험", "직업과 이름을 정해 첫 시간을 시작합니다", "start"),
-        MenuOption(
-            "스토리 AI",
-            "판정 뒤 장면을 쓰는 로컬 스토리 또는 사용자 인증 Kimi를 선택합니다",
-            "commentator",
-        ),
-        MenuOption("히스토리", "저장된 여정의 시간별 기록을 엽니다", "history"),
+        MenuOption("설정", "이야기가 펼쳐지는 방식을 정합니다", "settings"),
+        MenuOption("지난 이야기", "저장된 여정을 다시 읽습니다", "history"),
         MenuOption("종료", "터미널로 돌아갑니다", "exit"),
     )
     while True:
@@ -2608,29 +2634,49 @@ def _run_home_textual(
         )
         if selected in {None, "exit"}:
             return 0
-        if selected == "commentator":
-            commentator = interaction.choose(
-                "스토리 AI 설정",
+        if selected == "settings":
+            setting = interaction.choose(
+                "설정",
                 (
                     MenuOption[str | None](
-                        "Kimi ultrafast",
-                        "확정된 행동과 결과를 소설 장면으로 쓰며 실패하면 로컬 스토리로 전환합니다",
-                        "kimi",
+                        "이야기 방식",
+                        (
+                            "현재: 풍부한 이야기"
+                            if use_rich_story
+                            else "현재: 간결한 이야기"
+                        ),
+                        "story-mode",
                     ),
-                    MenuOption[str | None](
-                        "로컬 스토리",
-                        "네트워크 없이 확정된 사실로 한 시간의 장면을 만듭니다",
-                        "deterministic",
-                    ),
-                    MenuOption[str | None]("뒤로", "현재 설정을 유지합니다", None),
+                    MenuOption[str | None]("뒤로", "메인 메뉴로 돌아갑니다", None),
                 ),
-                subtitle="스토리는 판정 뒤 생성되며 세계 상태와 결과를 바꾸지 않습니다",
+                subtitle="읽고 싶은 이야기의 분위기와 진행 방식을 정하세요",
                 allow_back=True,
             )
-            if commentator == "kimi":
-                selected_story_provider = HermesKimiTurnStoryAdapter().story
-            elif commentator == "deterministic":
-                selected_story_provider = local_turn_story
+            if setting == "story-mode":
+                mode = interaction.choose(
+                    "이야기 방식",
+                    (
+                        MenuOption[str | None](
+                            "풍부한 이야기",
+                            "장소와 인물의 분위기를 살린 긴 장면으로 읽습니다",
+                            "rich",
+                        ),
+                        MenuOption[str | None](
+                            "간결한 이야기",
+                            "확정된 일을 중심으로 짧게 읽습니다",
+                            "concise",
+                        ),
+                        MenuOption[str | None]("뒤로", "현재 방식을 유지합니다", None),
+                    ),
+                    subtitle="세계의 결과는 같고 표현 방식만 달라집니다",
+                    allow_back=True,
+                )
+                if mode == "rich":
+                    use_rich_story = True
+                    selected_story_provider = rich_story_provider
+                elif mode == "concise":
+                    use_rich_story = False
+                    selected_story_provider = local_turn_story
             continue
         if selected == "history":
             archive = HistoryArchive(history_root)

@@ -213,10 +213,6 @@ def render_turn_story(
                 "",
             )
         )
-    if story_event_text is None:
-        lines.append(
-            f"{NO_STORY_EVENT_TEXT} 세계는 다음 선택을 기다리며 조용히 숨을 골랐다."
-        )
-    else:
+    if story_event_text is not None:
         lines.append(safe_terminal_text(story_event_text))
     return tuple(lines)

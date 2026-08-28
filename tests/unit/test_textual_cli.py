@@ -19,13 +19,7 @@ from aincrad.cli import (
     _starting_world,
 )
 from aincrad.domain import ActionIntent, ActionKind, CharacterClass
-from aincrad.domain.identity import (
-    CharacterIdentityProfile,
-    CoreValue,
-    InquiryStance,
-    RelationshipStance,
-    RiskAttitude,
-)
+from aincrad.domain.identity import CharacterIdentityProfile
 from aincrad.history import HistoryArchive
 from aincrad.persistence import EventLog
 from aincrad.storytelling import TurnStoryRequest, TurnStoryResult
@@ -38,12 +32,23 @@ def _offline_story_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class FakeInteraction:
-    def __init__(self, *answers: object, name: str = "유리별") -> None:
+    def __init__(
+        self,
+        *answers: object,
+        name: str = "유리별",
+        identity_texts: tuple[str, str] = (
+            "낯선 사람에게 먼저 말을 걸지만 위험은 신중하게 살핀다.",
+            "긴장하면 손가락으로 탁자를 두드리고 약속을 중요하게 여긴다.",
+        ),
+    ) -> None:
         self.answers = iter(answers)
         self.name = name
+        self.identity_texts = iter(identity_texts)
+        self.input_titles: list[str] = []
         self.menus: list[tuple[str, tuple[MenuOption[Any], ...]]] = []
         self.text_screens: list[tuple[str, tuple[str, ...]]] = []
         self.story_screens: list[tuple[str, tuple[str, ...]]] = []
+        self.story_loading_titles: list[str] = []
         self.timeline: list[str] = []
 
     def choose(
@@ -66,7 +71,9 @@ class FakeInteraction:
         subtitle: str,
         validate: Callable[[str], str],
     ) -> str | None:
-        return validate(self.name)
+        self.input_titles.append(title)
+        raw = self.name if title == "주인공 이름" else next(self.identity_texts)
+        return validate(raw)
 
     def show_text(self, title: str, body_lines: Sequence[str]) -> None:
         self.timeline.append(title)
@@ -76,13 +83,14 @@ class FakeInteraction:
         self.timeline.append(title)
         self.story_screens.append((title, tuple(body_lines)))
 
-
-_IDENTITY_ANSWERS = (
-    InquiryStance.CURIOUS,
-    RiskAttitude.BALANCED,
-    CoreValue.GROWTH,
-    RelationshipStance.COOPERATIVE,
-)
+    def show_story_from(
+        self,
+        title: str,
+        producer: Callable[[], Sequence[str]],
+    ) -> None:
+        self.timeline.append(title)
+        self.story_loading_titles.append(title)
+        self.story_screens.append((title, tuple(producer())))
 
 
 def test_textual_home_uses_widget_menu_without_plain_output(tmp_path: Path) -> None:
@@ -102,14 +110,17 @@ def test_textual_home_uses_widget_menu_without_plain_output(tmp_path: Path) -> N
     assert interaction.menus[0][0] == "메인 메뉴"
     assert [option.label for option in interaction.menus[0][1]] == [
         "새 모험",
-        "스토리 AI",
-        "히스토리",
+        "설정",
+        "지난 이야기",
         "종료",
     ]
+    assert "Kimi" not in " ".join(
+        option.label + option.description for option in interaction.menus[0][1]
+    )
 
 
-def test_textual_home_can_select_authenticated_kimi_storyteller(tmp_path: Path) -> None:
-    interaction = FakeInteraction("commentator", "kimi", "exit")
+def test_textual_settings_describes_story_modes_without_provider_names(tmp_path: Path) -> None:
+    interaction = FakeInteraction("settings", "story-mode", "rich", "exit")
 
     assert _run_home_textual(
         runner=None,
@@ -121,14 +132,25 @@ def test_textual_home_can_select_authenticated_kimi_storyteller(tmp_path: Path) 
 
     assert [title for title, _ in interaction.menus] == [
         "메인 메뉴",
-        "스토리 AI 설정",
+        "설정",
+        "이야기 방식",
         "메인 메뉴",
     ]
     assert [option.label for option in interaction.menus[1][1]] == [
-        "Kimi ultrafast",
-        "로컬 스토리",
+        "이야기 방식",
         "뒤로",
     ]
+    assert [option.label for option in interaction.menus[2][1]] == [
+        "풍부한 이야기",
+        "간결한 이야기",
+        "뒤로",
+    ]
+    visible_copy = " ".join(
+        option.label + option.description
+        for _, options in interaction.menus
+        for option in options
+    )
+    assert all(term not in visible_copy for term in ("Kimi", "Hermes", "provider", "fallback"))
 
 
 def test_default_run_routes_character_name_and_action_through_textual_widgets() -> None:
@@ -138,7 +160,7 @@ def test_default_run_routes_character_name_and_action_through_textual_widgets() 
         for intent in _available_intents(world, "hero")
         if intent.action is ActionKind.OBSERVE
     )
-    interaction = FakeInteraction(CharacterClass.WARRIOR, *_IDENTITY_ANSWERS, observe)
+    interaction = FakeInteraction(CharacterClass.WARRIOR, observe)
     output = StringIO()
 
     result = _default_run(
@@ -154,31 +176,26 @@ def test_default_run_routes_character_name_and_action_through_textual_widgets() 
 
     assert any(adventurer.name == "유리별" for adventurer in result.adventurers)
     assert output.getvalue() == ""
-    assert [title for title, _ in interaction.menus] == [
-        "직업 선택",
-        "탐구 성향",
-        "위험 태도",
-        "핵심 가치",
-        "관계 성향",
-        "유리별의 행동",
-    ]
+    assert [title for title, _ in interaction.menus] == ["직업 선택", "유리별의 행동"]
+    assert interaction.input_titles == ["주인공 이름", "주인공의 성격", "주인공의 특징"]
     assert interaction.menus[-1][1][-1].label == "AI 판단에 맡기기"
 
 
-def test_textual_onboarding_asks_four_human_identity_questions(tmp_path: Path) -> None:
+def test_textual_onboarding_asks_for_natural_language_personality_and_traits(
+    tmp_path: Path,
+) -> None:
     world = _starting_world(CharacterClass.WARRIOR, "유리별")
     observe = next(
         intent
         for intent in _available_intents(world, "hero")
         if intent.action is ActionKind.OBSERVE
     )
+    personality = "말수가 적고 낯선 상황을 오래 관찰한 뒤 결정을 내린다."
+    traits = "곤란할 때 농담하며 동료가 다치면 자신의 몫보다 먼저 챙긴다."
     interaction = FakeInteraction(
         CharacterClass.WARRIOR,
-        InquiryStance.ANALYTICAL,
-        RiskAttitude.CAREFUL,
-        CoreValue.HARMONY,
-        RelationshipStance.COOPERATIVE,
         observe,
+        identity_texts=(personality, traits),
     )
 
     _default_run(
@@ -193,19 +210,13 @@ def test_textual_onboarding_asks_four_human_identity_questions(tmp_path: Path) -
         interaction=interaction,
     )
 
-    assert [title for title, _ in interaction.menus] == [
-        "직업 선택",
-        "탐구 성향",
-        "위험 태도",
-        "핵심 가치",
-        "관계 성향",
-        "유리별의 행동",
-    ]
+    assert [title for title, _ in interaction.menus] == ["직업 선택", "유리별의 행동"]
+    assert interaction.input_titles == ["주인공 이름", "주인공의 성격", "주인공의 특징"]
     identity = HistoryArchive(tmp_path / "history").load_run(1).metadata["identity"]
-    assert identity["inquiry_stance"] == "analytical"
-    assert identity["risk_attitude"] == "careful"
-    assert identity["core_value"] == "harmony"
-    assert identity["relationship_stance"] == "cooperative"
+    assert isinstance(identity, dict)
+    assert identity["version"] == 2
+    assert identity["personality_description"] == personality
+    assert identity["traits_description"] == traits
 
 
 def test_textual_movement_is_three_explained_destinations_plus_other() -> None:
@@ -312,16 +323,12 @@ def test_identity_changes_commentary_but_not_recommended_destinations() -> None:
         if intent.action is ActionKind.MOVE
     )
     careful = CharacterIdentityProfile(
-        inquiry_stance=InquiryStance.ANALYTICAL,
-        risk_attitude=RiskAttitude.CAREFUL,
-        core_value=CoreValue.HARMONY,
-        relationship_stance=RelationshipStance.COOPERATIVE,
+        personality_description="위험을 오래 살피고 확실한 길만 고른다.",
+        traits_description="동료를 먼저 보호하고 낯선 제안은 두 번 확인한다.",
     )
     bold = CharacterIdentityProfile(
-        inquiry_stance=InquiryStance.CURIOUS,
-        risk_attitude=RiskAttitude.BOLD,
-        core_value=CoreValue.FREEDOM,
-        relationship_stance=RelationshipStance.INDEPENDENT,
+        personality_description="새로운 기회를 보면 먼저 몸을 던져 확인한다.",
+        traits_description="혼자 움직이기를 좋아하고 위험한 농담을 즐긴다.",
     )
     careful_interaction = FakeInteraction(_MOVE_CHOICE, first_move)
     bold_interaction = FakeInteraction(_MOVE_CHOICE, first_move)
@@ -350,7 +357,7 @@ def test_identity_changes_commentary_but_not_recommended_destinations() -> None:
 
 
 def test_cancel_before_first_action_does_not_create_phantom_history(tmp_path: Path) -> None:
-    interaction = FakeInteraction(CharacterClass.WARRIOR, *_IDENTITY_ANSWERS, None)
+    interaction = FakeInteraction(CharacterClass.WARRIOR, None)
     history_root = tmp_path / "history"
 
     with pytest.raises(EOFError, match="행동 선택"):
@@ -379,7 +386,6 @@ def test_textual_home_shows_resolved_turn_story_before_continue_choice(tmp_path:
     interaction = FakeInteraction(
         "start",
         CharacterClass.WARRIOR,
-        *_IDENTITY_ANSWERS,
         observe,
         False,
         "exit",
@@ -406,6 +412,10 @@ def test_textual_home_shows_resolved_turn_story_before_continue_choice(tmp_path:
     assert "유리별은 잿불마을에서 ‘온천 관찰’ 행동을 마쳤다" in rendered
     assert "경험치" not in rendered
     assert "HP 24/24" in rendered
+    assert "── 이번 시간 ──" in rendered
+    assert "판정 기록" not in rendered
+    assert "일어나지 않았다" not in rendered
+    assert "동료의 합류" not in rendered
 
 
 def test_textual_home_projects_free_ai_story_after_resolution_without_persisting_it(
@@ -421,15 +431,16 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     interaction = FakeInteraction(
         "start",
         CharacterClass.WARRIOR,
-        *_IDENTITY_ANSWERS,
         local_action,
         False,
         "exit",
     )
     requests: list[TurnStoryRequest] = []
+    provider_saw_story_shell: list[bool] = []
     ai_prose = "등불빛 아래서 유리별의 선택은 한 장면으로 길게 피어났다."
 
     def storyteller(request: TurnStoryRequest) -> TurnStoryResult:
+        provider_saw_story_shell.append(bool(interaction.story_loading_titles))
         requests.append(request)
         return TurnStoryResult(ai_prose, "test")
 
@@ -448,14 +459,17 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     ) == 0
 
     assert len(requests) == 1
+    assert provider_saw_story_shell == [True]
+    assert interaction.story_loading_titles == [
+        "1일차 00:00 · 잿불마을 · 한 시간의 이야기"
+    ]
     request = requests[0]
     assert request.selected_actions[0].outcome_ko
     assert all(request.selected_actions[0].details_ko)
+    assert request.resolved_story_event is None
     assert tuple(label.partition(":")[0] for label in request.identity_labels_ko) == (
-        "탐구 성향",
-        "위험 태도",
-        "핵심 가치",
-        "관계 성향",
+        "성격",
+        "특징",
     )
     story_index = next(
         index for index, (_, lines) in enumerate(interaction.story_screens) if ai_prose in lines
@@ -483,7 +497,6 @@ def test_textual_ai_delegation_names_the_action_it_actually_resolved(tmp_path: P
     interaction = FakeInteraction(
         "start",
         CharacterClass.WARRIOR,
-        *_IDENTITY_ANSWERS,
         _AI_CHOICE,
         False,
         "exit",
@@ -518,7 +531,6 @@ def test_textual_fatal_hour_shows_story_without_continue_menu(
     interaction = FakeInteraction(
         "start",
         CharacterClass.MAGE,
-        *_IDENTITY_ANSWERS,
         ActionIntent("hero", ActionKind.MOVE, target_location_id="vault-1"),
         "exit",
         name="유리별",

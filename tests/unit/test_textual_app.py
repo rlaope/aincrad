@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 from textual.color import Color
-from textual.widgets import Input, Static
+from textual.widgets import Input, Label, Static
 
 from aincrad.domain.identity import validate_hero_name
 from aincrad.tui.textual_app import (
@@ -11,6 +12,8 @@ from aincrad.tui.textual_app import (
     MenuOption,
     MenuScreen,
     NameScreen,
+    StoryScreen,
+    TextInputScreen,
     TextScreen,
     TextualInteraction,
 )
@@ -131,6 +134,33 @@ def test_four_home_options_fit_inside_a_40_by_24_viewport() -> None:
                 for item in items
             )
             await pilot.press("escape")
+
+    asyncio.run(exercise())
+
+
+def test_menu_options_have_visible_vertical_separation() -> None:
+    def session(ui):  # type: ignore[no-untyped-def]
+        ui.choose(
+            "메인 메뉴",
+            (
+                MenuOption("새 모험", "직업과 이름을 정해 첫 시간을 시작합니다", "start"),
+                MenuOption("히스토리", "기록된 회차와 이야기 일지를 살펴봅니다", "history"),
+                MenuOption("종료", "터미널로 돌아갑니다", "exit"),
+            ),
+        )
+        return 0
+
+    async def exercise() -> None:
+        app = AincradTextualApp(session)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, MenuScreen)
+            items = list(app.screen.query("ListItem"))
+            assert len(items) == 3
+            assert all(item.region.height > 0 for item in items)
+            for first, second in zip(items, items[1:], strict=False):
+                assert second.region.y - first.region.bottom >= 1
+            await pilot.press("enter")
 
     asyncio.run(exercise())
 
@@ -285,7 +315,7 @@ def test_name_input_sanitizes_inserted_text_before_live_render() -> None:
         app = AincradTextualApp(session)
         async with app.run_test(size=(60, 16)) as pilot:
             await pilot.pause()
-            name_input = app.screen.query_one("#name", Input)
+            name_input = app.screen.query_one("#text-input", Input)
             name_input.insert_text_at_cursor("A\u202eB\u2066C\x1b[31mD\x00E")
             await pilot.pause()
             assert "\u202e" not in name_input.value
@@ -293,5 +323,195 @@ def test_name_input_sanitizes_inserted_text_before_live_render() -> None:
             assert "\x1b" not in name_input.value
             assert "\x00" not in name_input.value
             await pilot.press("enter")
+
+    asyncio.run(exercise())
+
+
+def test_input_text_supports_caller_supplied_placeholder_and_hint() -> None:
+    captured: list[str | None] = []
+
+    def session(ui):  # type: ignore[no-untyped-def]
+        captured.append(
+            ui.input_text(
+                "성격 묘사",
+                subtitle="모험가의 성격을 자유롭게 묘사하세요",
+                validate=lambda value: value.strip(),
+                placeholder="자유롭게 문장으로 입력하세요",
+                hint="Enter 확정 · Esc 뒤로",
+            )
+        )
+        return 0
+
+    async def exercise() -> None:
+        app = AincradTextualApp(session)
+        async with app.run_test(size=(60, 16)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, TextInputScreen)
+            field = app.screen.query_one("#text-input", Input)
+            assert field.placeholder == "자유롭게 문장으로 입력하세요"
+            hint = str(app.screen.query_one("#hint", Label).content)
+            assert hint == "Enter 확정 · Esc 뒤로"
+            await pilot.press("호", "기", "심", "enter")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+    assert captured == ["호기심"]
+
+
+def test_input_text_default_copy_is_generic_not_name_specific() -> None:
+    def session(ui):  # type: ignore[no-untyped-def]
+        ui.input_text(
+            "특성 입력",
+            subtitle="자유 서술",
+            validate=lambda value: value,
+        )
+        return 0
+
+    async def exercise() -> None:
+        app = AincradTextualApp(session)
+        async with app.run_test(size=(60, 16)) as pilot:
+            await pilot.pause()
+            field = app.screen.query_one("#text-input", Input)
+            hint = str(app.screen.query_one("#hint", Label).content)
+            assert "이름" not in field.placeholder
+            assert "이름" not in hint
+            assert field.placeholder
+            assert "Enter" in hint
+            await pilot.press("enter")
+
+    asyncio.run(exercise())
+
+
+def test_show_story_from_mounts_loading_shell_before_producer_returns() -> None:
+    observed: dict[str, object] = {}
+    app_box: list[AincradTextualApp] = []
+
+    def session(ui):  # type: ignore[no-untyped-def]
+        def producer() -> tuple[str, ...]:
+            screen = app_box[0].screen
+            observed["screen_type"] = type(screen).__name__
+            observed["is_loading"] = getattr(screen, "is_loading", None)
+            observed["story_text"] = str(
+                screen.query_one("#story-text", Static).content
+            )
+            observed["hint"] = str(screen.query_one("#hint", Static).content)
+            return ("등불이 흔들리며 이야기가 도착했다.",)
+
+        ui.show_story_from("한 시간의 이야기", producer)
+        return 0
+
+    async def exercise() -> None:
+        app = AincradTextualApp(session)
+        app_box.append(app)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if observed:
+                    break
+            assert observed["screen_type"] == "StoryScreen"
+            assert observed["is_loading"] is True
+            loading_copy = f"{observed['story_text']}{observed['hint']}"
+            assert loading_copy.strip()
+            assert "준비" in loading_copy
+            for _ in range(40):
+                await pilot.pause(0.05)
+                screen = app.screen
+                if isinstance(screen, StoryScreen) and screen.revealed_text:
+                    break
+            assert isinstance(app.screen, StoryScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+            revealed = app.screen.revealed_text  # type: ignore[attr-defined]
+            assert revealed == "등불이 흔들리며 이야기가 도착했다."
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+
+def test_show_story_from_ignores_enter_while_loading_then_reveals() -> None:
+    release = threading.Event()
+    finished: list[int] = []
+
+    def session(ui):  # type: ignore[no-untyped-def]
+        def producer() -> tuple[str, ...]:
+            assert release.wait(timeout=10.0)
+            return ("느린 제공자가 마침내 장면을 보냈다.",)
+
+        ui.show_story_from("한 시간의 이야기", producer)
+        finished.append(0)
+        return 0
+
+    async def exercise() -> None:
+        app = AincradTextualApp(session)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, StoryScreen):
+                    break
+            screen = app.screen
+            assert isinstance(screen, StoryScreen)
+            assert screen.is_loading
+            await pilot.press("enter", "enter", "escape")
+            await pilot.pause()
+            assert app.screen is screen
+            assert not finished
+            release.set()
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if screen.revealed_text:
+                    break
+            assert not screen.is_loading
+            assert len(screen.revealed_text) > 0
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.revealed_text == "느린 제공자가 마침내 장면을 보냈다."
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if finished:
+                    break
+            assert finished == [0]
+
+    asyncio.run(exercise())
+
+
+def test_show_story_from_propagates_producer_error_without_orphan_screen() -> None:
+    outcomes: list[str] = []
+
+    def session(ui):  # type: ignore[no-untyped-def]
+        def producer() -> tuple[str, ...]:
+            raise RuntimeError("provider unavailable")
+
+        try:
+            ui.show_story_from("한 시간의 이야기", producer)
+        except RuntimeError as error:
+            outcomes.append(str(error))
+            ui.show_story("한 시간의 이야기", ("로컬 대체 장면입니다.",))
+        return 0
+
+    async def exercise() -> None:
+        app = AincradTextualApp(session)
+        async with app.run_test(size=(80, 24)) as pilot:
+            fallback = None
+            for _ in range(60):
+                await pilot.pause(0.05)
+                screen = app.screen
+                if isinstance(screen, StoryScreen) and not screen.is_loading:
+                    fallback = screen
+                    break
+            assert fallback is not None
+            assert outcomes == ["provider unavailable"]
+            story_screens = [
+                candidate
+                for candidate in app.screen_stack
+                if isinstance(candidate, StoryScreen)
+            ]
+            assert story_screens == [fallback]
+            await pilot.press("enter")
+            await pilot.pause()
+            assert fallback.revealed_text == "로컬 대체 장면입니다."
+            await pilot.press("enter")
+            await pilot.pause()
 
     asyncio.run(exercise())

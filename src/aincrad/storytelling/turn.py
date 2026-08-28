@@ -118,12 +118,14 @@ def local_turn_story(request: TurnStoryRequest) -> TurnStoryResult:
 
     actions = " ".join(_local_action_sentence(action) for action in request.selected_actions)
     story_event = _local_story_event_sentence(request.resolved_story_event)
-    identity = " · ".join(request.identity_labels_ko)
+    identity = " ".join(
+        label.partition(":")[2].strip() or label for label in request.identity_labels_ko
+    )
     opening = (
         f"{request.day}일차 {request.hour:02d}시, {request.current_location_name_ko}. "
         f"{request.current_location_description_ko}"
     )
-    identity_clause = f" {identity}의 시선으로 바라본" if identity else ""
+    identity_clause = f" {identity}" if identity else ""
     prose = f"{opening}{identity_clause} 한 시간이 마무리되었다. {actions} {story_event}"
     return TurnStoryResult(_display_text(prose), "local")
 
@@ -364,15 +366,15 @@ def _display_text(text: str) -> str:
 
 
 def _local_action_sentence(action: ResolvedAction) -> str:
-    detail = f" 구체적 결과는 {'; '.join(action.details_ko)}." if action.details_ko else ""
+    detail = f" {'; '.join(action.details_ko)}." if action.details_ko else ""
     return (
-        f"{action.actor_name_ko}의 {action.action_ko} 행동은 {action.controller_ko}의 선택으로 "
-        f"이루어졌고, 판정 결과는 {action.outcome_ko}이었다.{detail}"
+        f"{action.actor_name_ko}은 ‘{action.action_ko}’에 나섰다. "
+        f"결국 {action.outcome_ko}.{detail}"
     )
 
 
 def _local_story_event_sentence(event: ResolvedStoryEvent | None) -> str:
     if event is None:
-        return "새로운 이야기 사건은 없었고, 남은 여운만이 다음 시간을 기다렸다."
+        return ""
     detail = f" {'; '.join(event.details_ko)}." if event.details_ko else "."
     return f"이와 함께 {event.kind_ko} 사건이 해결되었다{detail}"

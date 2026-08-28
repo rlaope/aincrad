@@ -40,7 +40,8 @@ def test_turn_story_explains_the_delegated_action_and_concrete_result() -> None:
     assert "경험치" not in rendered
     assert "HP 24/24" in rendered
     assert "MP 8/8" in rendered
-    assert "새로운 의뢰나 동료의 합류 같은 사건은 일어나지 않았다" in rendered
+    assert "일어나지 않았다" not in rendered
+    assert "동료의 합류" not in rendered
     assert "AI가 활동" not in rendered
     assert "xp_awarded" not in rendered
     assert "테스트용사은" not in rendered

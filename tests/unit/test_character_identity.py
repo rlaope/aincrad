@@ -1,4 +1,4 @@
-"""Tests for the replay-safe enum-coded human identity profile."""
+"""Tests for the replay-safe natural-language human identity profile."""
 
 import inspect
 from dataclasses import FrozenInstanceError, fields, is_dataclass
@@ -11,6 +11,7 @@ from aincrad.domain.identity import (
     IDENTITY_DIMENSIONS,
     IDENTITY_PROFILE_SCHEMA,
     IDENTITY_PROFILE_VERSION,
+    MAX_IDENTITY_DESCRIPTION_CELLS,
     CharacterIdentityError,
     CharacterIdentityProfile,
     CoreValue,
@@ -19,7 +20,13 @@ from aincrad.domain.identity import (
     RiskAttitude,
 )
 
-_VALID_JSON: dict[str, Any] = {
+_VALID_V2_JSON: dict[str, Any] = {
+    "schema": "aincrad.identity.profile",
+    "version": 2,
+    "personality_description": "차분히 관찰한 뒤 동료의 의견을 듣고 행동한다.",
+    "traits_description": "위기에서는 약자를 먼저 돕고 약속을 끝까지 지킨다.",
+}
+_LEGACY_V1_JSON: dict[str, Any] = {
     "schema": "aincrad.identity.profile",
     "version": 1,
     "inquiry_stance": "curious",
@@ -31,123 +38,147 @@ _VALID_JSON: dict[str, Any] = {
 
 def _profile() -> CharacterIdentityProfile:
     return CharacterIdentityProfile(
-        inquiry_stance=InquiryStance.CURIOUS,
-        risk_attitude=RiskAttitude.CAREFUL,
-        core_value=CoreValue.HARMONY,
-        relationship_stance=RelationshipStance.COOPERATIVE,
+        personality_description="차분히 관찰한 뒤 동료의 의견을 듣고 행동한다.",
+        traits_description="위기에서는 약자를 먼저 돕고 약속을 끝까지 지킨다.",
     )
 
 
-def test_error_is_a_value_error() -> None:
-    assert issubclass(CharacterIdentityError, ValueError)
+def test_current_profile_persists_normalized_korean_descriptions_as_v2() -> None:
+    profile = CharacterIdentityProfile(
+        personality_description="  차분히 관찰한 뒤 동료의 의견을 듣고 행동한다.  ",
+        traits_description="위기에서는 약자를 먼저 돕고 약속을 끝까지 지킨다.",
+    )
+
+    assert profile.personality_description == "차분히 관찰한 뒤 동료의 의견을 듣고 행동한다."
+    assert profile.traits_description == "위기에서는 약자를 먼저 돕고 약속을 끝까지 지킨다."
+    assert profile.to_json() == _VALID_V2_JSON
 
 
-def test_profile_is_frozen_with_slots_and_exactly_four_dimensions() -> None:
+def test_profile_is_frozen_with_slots_and_exactly_two_text_dimensions() -> None:
     profile = _profile()
     assert is_dataclass(profile)
     assert not hasattr(profile, "__dict__")
-    assert [f.name for f in fields(profile)] == [
-        "inquiry_stance",
-        "risk_attitude",
-        "core_value",
-        "relationship_stance",
+    assert [field.name for field in fields(profile)] == [
+        "personality_description",
+        "traits_description",
     ]
     with pytest.raises(FrozenInstanceError):
-        profile.inquiry_stance = InquiryStance.ANALYTICAL  # type: ignore[misc]
+        profile.personality_description = "새 성격 설명"  # type: ignore[misc]
 
 
-def test_enum_wire_values_are_exact_stable_english_sets() -> None:
-    assert {member.value for member in InquiryStance} == {"curious", "analytical", "practical"}
-    assert {member.value for member in RiskAttitude} == {"bold", "balanced", "careful"}
-    assert {member.value for member in CoreValue} == {"honor", "freedom", "harmony", "growth"}
-    assert {member.value for member in RelationshipStance} == {
-        "leading",
-        "cooperative",
-        "independent",
-    }
-
-
-def test_profile_requires_enum_members_not_free_text() -> None:
-    with pytest.raises(CharacterIdentityError, match="inquiry_stance"):
-        CharacterIdentityProfile(
-            inquiry_stance="curious",  # type: ignore[arg-type]
-            risk_attitude=RiskAttitude.CAREFUL,
-            core_value=CoreValue.HARMONY,
-            relationship_stance=RelationshipStance.COOPERATIVE,
-        )
-
-
-def test_to_json_emits_exact_keys_schema_and_string_wire_values() -> None:
-    document = _profile().to_json()
-    assert document == _VALID_JSON
-    assert type(document["schema"]) is str
-    assert type(document["version"]) is int
-    for key in ("inquiry_stance", "risk_attitude", "core_value", "relationship_stance"):
-        assert type(document[key]) is str
-
-
-def test_json_round_trip_preserves_the_profile() -> None:
+def test_current_json_round_trip_preserves_profile() -> None:
     profile = _profile()
     assert CharacterIdentityProfile.from_json(profile.to_json()) == profile
 
 
-def test_schema_constants_are_stable() -> None:
+def test_current_json_uses_exact_v2_schema_keys() -> None:
+    assert _profile().to_json() == _VALID_V2_JSON
+    assert type(IDENTITY_PROFILE_VERSION) is int
     assert IDENTITY_PROFILE_SCHEMA == "aincrad.identity.profile"
-    assert IDENTITY_PROFILE_VERSION == 1
+    assert IDENTITY_PROFILE_VERSION == 2
 
 
-def test_from_json_rejects_non_mapping_input() -> None:
-    for bad in (None, "text", 3, ["schema"], True):
-        with pytest.raises(CharacterIdentityError, match="mapping"):
-            CharacterIdentityProfile.from_json(bad)  # type: ignore[arg-type]
+@pytest.mark.parametrize("field_name", ["personality_description", "traits_description"])
+def test_constructor_rejects_non_korean_or_empty_descriptions(field_name: str) -> None:
+    values: dict[str, Any] = {
+        "personality_description": "침착하게 주변을 살핀다.",
+        "traits_description": "동료를 소중히 여기고 약속을 지킨다.",
+    }
+    for bad_value in ("", "   ", "curious", "\u0301"):
+        values[field_name] = bad_value
+        with pytest.raises(CharacterIdentityError, match=field_name):
+            CharacterIdentityProfile(**values)
 
 
-def test_from_json_rejects_missing_keys() -> None:
-    for key in _VALID_JSON:
-        document = dict(_VALID_JSON)
+@pytest.mark.parametrize("field_name", ["personality_description", "traits_description"])
+def test_constructor_rejects_non_string_control_and_unsupported_unicode(
+    field_name: str,
+) -> None:
+    values: dict[str, Any] = {
+        "personality_description": "침착하게 주변을 살핀다.",
+        "traits_description": "동료를 소중히 여기고 약속을 지킨다.",
+    }
+    for bad_value in (None, True, 3, ["설명"], "줄\n바꿈", "형식\u200b문자", "\u0301설명"):
+        values[field_name] = bad_value
+        with pytest.raises(CharacterIdentityError, match=field_name):
+            CharacterIdentityProfile(**values)
+
+
+@pytest.mark.parametrize("field_name", ["personality_description", "traits_description"])
+def test_constructor_bounds_each_description_by_display_cells(field_name: str) -> None:
+    values: dict[str, Any] = {
+        "personality_description": "침착하게 주변을 살핀다.",
+        "traits_description": "동료를 소중히 여기고 약속을 지킨다.",
+    }
+    values[field_name] = "가" * (MAX_IDENTITY_DESCRIPTION_CELLS // 2 + 1)
+    with pytest.raises(CharacterIdentityError, match=field_name):
+        CharacterIdentityProfile(**values)
+
+
+def test_from_json_reads_legacy_v1_profile_as_current_natural_text() -> None:
+    profile = CharacterIdentityProfile.from_json(_LEGACY_V1_JSON)
+
+    assert profile == CharacterIdentityProfile(
+        personality_description="호기심으로 먼저 다가간다; 신중하게 안전을 지킨다.",
+        traits_description="조화로운 삶; 동료와는 힘을 모아 협력한다.",
+    )
+    assert profile.to_json() == {
+        "schema": "aincrad.identity.profile",
+        "version": 2,
+        "personality_description": "호기심으로 먼저 다가간다; 신중하게 안전을 지킨다.",
+        "traits_description": "조화로운 삶; 동료와는 힘을 모아 협력한다.",
+    }
+
+
+@pytest.mark.parametrize("document", [None, "text", 3, ["schema"], True])
+def test_from_json_rejects_non_mapping_input(document: object) -> None:
+    with pytest.raises(CharacterIdentityError, match="mapping"):
+        CharacterIdentityProfile.from_json(document)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("base_document", [_VALID_V2_JSON, _LEGACY_V1_JSON])
+def test_from_json_rejects_missing_and_unknown_keys(base_document: dict[str, Any]) -> None:
+    for key in base_document:
+        document = dict(base_document)
         del document[key]
         with pytest.raises(CharacterIdentityError, match="keys"):
             CharacterIdentityProfile.from_json(document)
-
-
-def test_from_json_rejects_unknown_keys() -> None:
-    document = dict(_VALID_JSON)
-    document["notes"] = "free text"
     with pytest.raises(CharacterIdentityError, match="keys"):
-        CharacterIdentityProfile.from_json(document)
+        CharacterIdentityProfile.from_json({**base_document, "notes": "설명"})
 
 
-def test_from_json_rejects_wrong_schema_and_wrong_version() -> None:
-    with pytest.raises(CharacterIdentityError, match="schema"):
-        CharacterIdentityProfile.from_json({**_VALID_JSON, "schema": "aincrad.other"})
+@pytest.mark.parametrize("bad_version", ["2", 2.0, True, 3])
+def test_from_json_rejects_invalid_version_types_and_values(bad_version: object) -> None:
     with pytest.raises(CharacterIdentityError, match="version"):
-        CharacterIdentityProfile.from_json({**_VALID_JSON, "version": 2})
+        CharacterIdentityProfile.from_json({**_VALID_V2_JSON, "version": bad_version})
 
 
-def test_from_json_rejects_non_int_and_bool_version() -> None:
-    for bad_version in ("1", 1.0, True):
-        with pytest.raises(CharacterIdentityError, match="version"):
-            CharacterIdentityProfile.from_json({**_VALID_JSON, "version": bad_version})
-
-
-def test_from_json_rejects_non_string_and_bool_dimension_values() -> None:
-    for bad_value in (True, 0, None, ["curious"], InquiryStance.CURIOUS):
-        with pytest.raises(CharacterIdentityError, match="inquiry_stance"):
-            CharacterIdentityProfile.from_json({**_VALID_JSON, "inquiry_stance": bad_value})
-
-
-def test_from_json_rejects_arbitrary_free_text_values() -> None:
-    for key in ("inquiry_stance", "risk_attitude", "core_value", "relationship_stance"):
-        with pytest.raises(CharacterIdentityError, match=key):
-            CharacterIdentityProfile.from_json({**_VALID_JSON, key: "totally made up"})
-
-
-def test_from_json_rejects_non_string_schema() -> None:
+def test_from_json_rejects_wrong_schema() -> None:
     with pytest.raises(CharacterIdentityError, match="schema"):
-        CharacterIdentityProfile.from_json({**_VALID_JSON, "schema": 7})
+        CharacterIdentityProfile.from_json({**_VALID_V2_JSON, "schema": "aincrad.other"})
 
 
-def test_dimension_metadata_covers_all_four_dimensions_in_order() -> None:
+@pytest.mark.parametrize("field_name", ["personality_description", "traits_description"])
+def test_from_json_rejects_invalid_current_text(field_name: str) -> None:
+    for bad_value in (True, 0, None, ["설명"], "\t", "curious", "줄\n바꿈"):
+        with pytest.raises(CharacterIdentityError, match=field_name):
+            CharacterIdentityProfile.from_json({**_VALID_V2_JSON, field_name: bad_value})
+
+
+@pytest.mark.parametrize(
+    "legacy_key", ["inquiry_stance", "risk_attitude", "core_value", "relationship_stance"]
+)
+def test_from_json_rejects_invalid_legacy_enum_wire_values(legacy_key: str) -> None:
+    for bad_value in (True, 0, None, ["curious"], "made-up"):
+        with pytest.raises(CharacterIdentityError, match=legacy_key):
+            CharacterIdentityProfile.from_json({**_LEGACY_V1_JSON, legacy_key: bad_value})
+
+
+def test_legacy_enum_symbols_and_selection_metadata_remain_available() -> None:
+    assert InquiryStance.CURIOUS.value == "curious"
+    assert RiskAttitude.CAREFUL.value == "careful"
+    assert CoreValue.HARMONY.value == "harmony"
+    assert RelationshipStance.COOPERATIVE.value == "cooperative"
     assert [dimension.key for dimension in IDENTITY_DIMENSIONS] == [
         "inquiry_stance",
         "risk_attitude",
@@ -156,29 +187,8 @@ def test_dimension_metadata_covers_all_four_dimensions_in_order() -> None:
     ]
 
 
-def test_dimension_metadata_has_korean_labels_questions_and_exact_options() -> None:
-    expected_values = {
-        "inquiry_stance": {member.value for member in InquiryStance},
-        "risk_attitude": {member.value for member in RiskAttitude},
-        "core_value": {member.value for member in CoreValue},
-        "relationship_stance": {member.value for member in RelationshipStance},
-    }
-    for dimension in IDENTITY_DIMENSIONS:
-        assert dimension.label
-        assert dimension.question.endswith("?")
-        assert any("\uac00" <= ch <= "\ud7a3" for ch in dimension.label)
-        assert any("\uac00" <= ch <= "\ud7a3" for ch in dimension.question)
-        assert {option.value for option in dimension.options} == expected_values[dimension.key]
-        for option in dimension.options:
-            assert any("\uac00" <= ch <= "\ud7a3" for ch in option.label)
-
-
-def test_dimension_metadata_is_immutable() -> None:
-    assert isinstance(IDENTITY_DIMENSIONS, tuple)
-    dimension = IDENTITY_DIMENSIONS[0]
-    assert isinstance(dimension.options, tuple)
-    with pytest.raises(FrozenInstanceError):
-        dimension.label = "x"  # type: ignore[misc]
+def test_error_is_a_value_error() -> None:
+    assert issubclass(CharacterIdentityError, ValueError)
 
 
 def test_identity_module_does_not_touch_world_state() -> None:

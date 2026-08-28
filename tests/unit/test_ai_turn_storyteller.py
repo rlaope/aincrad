@@ -94,6 +94,13 @@ def test_local_fallback_is_immutable_and_action_and_location_specific() -> None:
     assert "성공" in result.story_ko
     assert "의뢰 제시" in result.story_ko
     assert ".에서" not in result.story_ko
+    assert "판정" not in result.story_ko
+    assert "구체적 결과" not in result.story_ko
+    assert "사용자의 선택" not in result.story_ko
+    assert "성격:" not in result.story_ko
+    assert "특징:" not in result.story_ko
+    assert "대기’을" not in result.story_ko
+    assert "‘대기’에 나섰다" in result.story_ko
     with pytest.raises(FrozenInstanceError):
         result.story_ko = "변경"  # type: ignore[misc]
 
