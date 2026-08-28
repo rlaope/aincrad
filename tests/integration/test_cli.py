@@ -93,8 +93,8 @@ def test_movement_awards_zero_xp_and_round_trips_through_hash_replay(
     )
 
     records = EventLog(event_log).verify()
-    assert records[0].event["schema_version"] == 4
-    assert records[0].event["rules_version"] == 3
+    assert records[0].event["schema_version"] == 5
+    assert records[0].event["rules_version"] == 4
     tick = records[1].event
     hero_event = next(
         event
@@ -130,9 +130,9 @@ def test_identity_profile_round_trips_through_v3_log_and_history(tmp_path: Path)
     replayed = _default_replay(event_log=event_log, verify_hash=True)
 
     init = EventLog(event_log).verify()[0].event
-    assert init["version"] == 4
-    assert init["schema_version"] == 4
-    assert init["rules_version"] == 3
+    assert init["version"] == 5
+    assert init["schema_version"] == 5
+    assert init["rules_version"] == 4
     assert init["identity"] == identity.to_json()
     assert replayed.adventurers == simulated.adventurers
     assert HistoryArchive(history_root).load_run(1).metadata["identity"] == identity.to_json()
@@ -529,7 +529,7 @@ def test_prompt_always_lists_ai_delegation_last() -> None:
 
     assert selected in allowed
     assert selected.action is ActionKind.MOVE
-    assert selected.target_location_id == "emberfall-inn"
+    assert selected.target_location_id == "mossreach"
     lines = stdout.getvalue().splitlines()
     ai_option = next(line for line in lines if "AI 판단에 맡긴다" in line)
     assert ai_option.startswith(f"{len(allowed) + 1}.")
@@ -558,7 +558,7 @@ def test_two_hours_collect_one_action_from_each_adventurer() -> None:
 
 
 def test_interactive_new_run_selects_one_hero_then_runs_one_hour() -> None:
-    stdin = StringIO("1\n별\n8\n")
+    stdin = StringIO("1\n별\n22\n")
     stdout = StringIO()
 
     exit_code = main(

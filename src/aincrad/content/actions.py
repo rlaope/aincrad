@@ -123,31 +123,57 @@ def action_catalog_from_fixture(
 def contextual_action_for_intent(
     world: WorldState, intent: ActionIntent
 ) -> ContextualAction | None:
-    """Resolve exactly one local contextual action, returning None on ambiguity or mismatch."""
+    """Resolve exactly one local or atomic Emberfall facility action."""
 
     actor = world.adventurers.get(intent.adventurer_id)
     if actor is None or not isinstance(intent.action, ActionKind):
         return None
+    location_id = actor.location_id
+    if intent.target_location_id is not None:
+        target = world.locations.get(intent.target_location_id)
+        if (
+            actor.location_id != "emberfall"
+            or target is None
+            or intent.target_location_id not in world.locations["emberfall"].connections
+            or target.connections != ("emberfall",)
+        ):
+            return None
+        location_id = intent.target_location_id
     matches = tuple(
         action
-        for action in world.locations[actor.location_id].contextual_actions
+        for action in world.locations[location_id].contextual_actions
         if action.kind is intent.action
     )
     return matches[0] if len(matches) == 1 else None
 
 
 def available_action_intents(world: WorldState, adventurer_id: str) -> tuple[ActionIntent, ...]:
-    """Offer connected movement and actions currently representable by WorldState."""
+    """Offer connected routes and atomic contextual actions currently representable."""
 
     adventurer = world.adventurers.get(adventurer_id)
     if adventurer is None or not adventurer.can_act:
         return ()
     location = world.locations[adventurer.location_id]
+    facility_ids = (
+        tuple(
+            destination
+            for destination in location.connections
+            if world.locations[destination].connections == ("emberfall",)
+        )
+        if adventurer.location_id == "emberfall"
+        else ()
+    )
     moves = tuple(
         ActionIntent(adventurer_id, ActionKind.MOVE, target_location_id=destination)
         for destination in location.connections
+        if destination not in facility_ids
+    )
+    facility_actions = tuple(
+        ActionIntent(adventurer_id, action.kind, target_location_id=facility_id)
+        for facility_id in facility_ids
+        for action in world.locations[facility_id].contextual_actions
     )
     local = tuple(
         ActionIntent(adventurer_id, action.kind) for action in location.contextual_actions
     )
-    return (*moves, *local)
+    return (*moves, *facility_actions, *local)

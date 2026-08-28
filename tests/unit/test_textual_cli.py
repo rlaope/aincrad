@@ -268,14 +268,14 @@ def test_textual_movement_is_three_explained_destinations_plus_other() -> None:
     assert all("사회적:" in option.description for option in movement_options[:-1])
 
 
-def test_emberfall_action_menu_exposes_town_facilities_instead_of_one_generic_move() -> None:
+def test_emberfall_facility_selection_opens_a_resident_grounded_submenu() -> None:
     world = _starting_world(CharacterClass.WARRIOR, "유리별")
-    shop = next(
-        intent
-        for intent in _available_intents(world, "hero")
-        if intent.target_location_id == "emberfall-shop"
+    chosen = ActionIntent(
+        "hero",
+        ActionKind.BROWSE_GOODS,
+        target_location_id="emberfall-shop",
     )
-    interaction = FakeInteraction(shop)
+    interaction = FakeInteraction("emberfall-shop", chosen)
 
     selected = _prompt_for_intent_textual(
         world,
@@ -283,7 +283,11 @@ def test_emberfall_action_menu_exposes_town_facilities_instead_of_one_generic_mo
         interaction=interaction,  # type: ignore[arg-type]
     )
 
-    assert selected.intent == shop
+    assert selected.intent == chosen
+    assert [title for title, _ in interaction.menus] == [
+        "유리별의 행동",
+        "잿불창고 교역소",
+    ]
     labels = [option.label for option in interaction.menus[0][1]]
     assert labels[:6] == [
         "상점 · 잿불창고 교역소",
@@ -293,8 +297,104 @@ def test_emberfall_action_menu_exposes_town_facilities_instead_of_one_generic_mo
         "주점 · 구리 혜성 주점",
         "마을 밖으로 이동",
     ]
-    assert "이동하기" not in labels
-    assert "온천 관찰" in labels
+    assert [option.label for option in interaction.menus[1][1]] == [
+        "상품 목록 보기",
+        "보급품 구입",
+        "전리품 판매",
+        "Orrin에게 말 걸기",
+    ]
+    assert "안내: Orrin Flint · 상점 관리인" in interaction.menu_contexts[1]
+
+
+def test_back_from_emberfall_facility_submenu_returns_to_hub_without_mutation() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    observed = next(
+        intent
+        for intent in _available_intents(world, "hero")
+        if intent.action is ActionKind.OBSERVE
+    )
+    interaction = FakeInteraction("emberfall-shop", None, observed)
+
+    selected = _prompt_for_intent_textual(
+        world,
+        "hero",
+        interaction=interaction,  # type: ignore[arg-type]
+    )
+
+    assert selected.intent == observed
+    assert world.tick == 0
+    assert world.adventurers["hero"].location_id == "emberfall"
+    assert [title for title, _ in interaction.menus] == [
+        "유리별의 행동",
+        "잿불창고 교역소",
+        "유리별의 행동",
+    ]
+
+
+def test_textual_facility_engagement_submits_one_atomic_hour_after_submenu_choice(
+    tmp_path: Path,
+) -> None:
+    chosen = ActionIntent(
+        "hero",
+        ActionKind.BROWSE_GOODS,
+        target_location_id="emberfall-shop",
+    )
+    interaction = FakeInteraction("emberfall-shop", chosen)
+
+    result = _default_run(
+        seed=7,
+        hours=1,
+        headless=False,
+        output=tmp_path / "events.jsonl",
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+        hero_name="유리별",
+        identity_profile=CharacterIdentityProfile(
+            personality_description="차분히 살핀다.",
+            traits_description="약속을 지킨다.",
+        ),
+        stdin=StringIO(),
+        stdout=StringIO(),
+        interaction=interaction,  # type: ignore[arg-type]
+    )
+
+    records = EventLog(tmp_path / "events.jsonl").verify()
+    proposal = records[1].event["proposals"][0]
+    action_event = records[1].event["action_events"][0]
+    assert result.summary.event_count == 1
+    assert result.adventurers[0].location == "잿불창고 교역소"
+    assert proposal["action"] == ActionKind.BROWSE_GOODS.value
+    assert proposal["target_location_id"] == "emberfall-shop"
+    assert action_event["target_location_id"] == "emberfall-shop"
+    assert dict(action_event["details"])["location_id"] == "emberfall-shop"
+    assert interaction.story_screens
+
+
+@pytest.mark.parametrize(
+    "facility_id",
+    (
+        "emberfall-shop",
+        "emberfall-inn",
+        "emberfall-quest-hall",
+        "emberfall-plaza",
+        "emberfall-tavern",
+    ),
+)
+def test_each_emberfall_facility_submenu_uses_its_full_contextual_catalog(
+    facility_id: str,
+) -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    expected = tuple(action.label_ko for action in world.locations[facility_id].contextual_actions)
+    selected = ActionIntent(
+        "hero",
+        world.locations[facility_id].contextual_actions[0].kind,
+        target_location_id=facility_id,
+    )
+    interaction = FakeInteraction(facility_id, selected)
+
+    _prompt_for_intent_textual(world, "hero", interaction=interaction)  # type: ignore[arg-type]
+
+    assert tuple(option.label for option in interaction.menus[1][1]) == expected
 
 
 def test_textual_facility_action_context_names_the_fixture_resident_in_korean() -> None:
@@ -304,7 +404,7 @@ def test_textual_facility_action_context_names_the_fixture_resident_in_korean() 
     local_intent = next(
         intent
         for intent in _available_intents(world, hero.id)
-        if intent.action is not ActionKind.MOVE
+        if intent.action is not ActionKind.MOVE and intent.target_location_id is None
     )
     interaction = FakeInteraction(local_intent)
 
@@ -332,7 +432,7 @@ def test_textual_facility_menus_expose_named_resident_conversations(
     selected_intent = next(
         intent
         for intent in _available_intents(world, hero.id)
-        if intent.action is not ActionKind.MOVE
+        if intent.action is not ActionKind.MOVE and intent.target_location_id is None
     )
     interaction = FakeInteraction(selected_intent)
 
@@ -357,7 +457,7 @@ def test_textual_facility_menus_expose_read_only_catalog_actions(
     selected_intent = next(
         intent
         for intent in _available_intents(world, hero.id)
-        if intent.action is not ActionKind.MOVE
+        if intent.action is not ActionKind.MOVE and intent.target_location_id is None
     )
     interaction = FakeInteraction(selected_intent)
 
@@ -390,7 +490,7 @@ def test_textual_action_menu_uses_each_locations_contextual_catalog(
     local_intents = tuple(
         intent
         for intent in _available_intents(world, hero.id)
-        if intent.action is not ActionKind.MOVE
+        if intent.action is not ActionKind.MOVE and intent.target_location_id is None
     )
     interaction = FakeInteraction(local_intents[0])
 
@@ -519,7 +619,7 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     local_action = next(
         intent
         for intent in _available_intents(world, "hero")
-        if intent.action is not ActionKind.MOVE
+        if intent.action is not ActionKind.MOVE and intent.target_location_id is None
     )
     interaction = FakeInteraction(
         "start",
@@ -583,8 +683,8 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     replayed = _default_replay(event_log=event_logs[0], verify_hash=True)
     assert replayed.summary.status == "해시 검증 완료"
     records = EventLog(event_logs[0]).verify()
-    assert records[0].event["schema_version"] == 4
-    assert records[0].event["rules_version"] == 3
+    assert records[0].event["schema_version"] == 5
+    assert records[0].event["rules_version"] == 4
     assert records[1].event["action_events"][0]["action"] == ActionKind.OBSERVE.value
 
 
@@ -609,7 +709,7 @@ def test_textual_ai_delegation_names_the_action_it_actually_resolved(tmp_path: P
     )
 
     rendered = "\n".join(interaction.story_screens[0][1])
-    assert "주변 상황을 살핀 유리별은 길을 골라 고요한 심지 여관으로 향했다" in rendered
+    assert "주변 상황을 살핀 유리별은 길을 골라 이끼자락 황야로 향했다" in rendered
     assert "경험치" not in rendered
     assert "AI가 활동" not in rendered
 

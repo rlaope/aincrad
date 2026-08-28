@@ -159,13 +159,13 @@ def test_action_menu_shows_decision_context_and_keeps_ai_last() -> None:
     selected = _prompt_for_intent_menu(
         world,
         HERO_ID,
-        key_reader=Keys(Key.ENTER),
+        key_reader=Keys(Key.ENTER, Key.ENTER, Key.ENTER),
         stdout=StringIO(),
         frame_writer=frames.append,
     )
 
     assert selected.controller == "user"
-    frame = frames[-1]
+    frame = next(frame for frame in frames if "유리별의 행동" in frame)
     assert "유리별의 행동" in frame
     assert "1일차 00:00" in frame
     assert "잿불마을" in frame
@@ -205,7 +205,7 @@ def test_interactive_hourly_projection_uses_only_owned_frame_writer() -> None:
         force=False,
         character_class=CharacterClass.WARRIOR,
         hero_name="유리별",
-        key_reader=Keys(Key.ENTER),
+        key_reader=Keys(Key.ENTER, Key.ENTER, Key.ENTER),
         stdin=StringIO(),
         stdout=output,
         continue_decider=lambda _world: False,
@@ -219,7 +219,7 @@ def test_interactive_hourly_projection_uses_only_owned_frame_writer() -> None:
 def test_owned_name_input_frame_respects_live_terminal_height(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    encoded = iter("별\r\r".encode())
+    encoded = iter("별\r\r\r".encode())
     frames: list[str] = []
     monkeypatch.setattr("aincrad.cli._screen_width", lambda: 40)
     monkeypatch.setattr("aincrad.cli._screen_height", lambda: 8)
@@ -556,7 +556,7 @@ def test_interactive_summary_uses_completed_hours_not_the_session_ceiling() -> N
         headless=False,
         output=None,
         force=False,
-        key_reader=Keys(Key.ENTER, Key.ENTER),
+        key_reader=Keys(Key.ENTER, Key.ENTER, Key.ENTER),
         stdin=StringIO("한별\n"),
         stdout=output,
         continue_decider=lambda _world: False,

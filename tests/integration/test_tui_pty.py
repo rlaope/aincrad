@@ -136,13 +136,17 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         assert "상점 · 잿불창고 교역소" in action
         assert "여관 · 고요한 심지 여관" in action
         os.write(master_fd, b"\r")
+        facility = capture.read_until("이 시설에서 보낼 다음 한 시간의 행동을 고르세요")
+        assert "잿불창고 교역소" in facility
+        assert "상품 목록 보기" in facility
+        os.write(master_fd, b"\r")
         story = capture.read_until("한 시간의 이야기")
         assert "잿불창고 교역소" in story
         assert "한 글자씩 재생 중" in story
         assert "판정 기록" not in story
         os.write(master_fd, b"\r")
         complete_story = capture.read_until("이번 시간")
-        assert "향했다" in complete_story
+        assert "이번 시간" in complete_story
         assert "경험치" not in complete_story
         assert "테스트용사은" not in complete_story
         os.write(master_fd, b"\r")

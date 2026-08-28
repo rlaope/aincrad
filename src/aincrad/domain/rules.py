@@ -160,7 +160,28 @@ def apply_intent(
     if intent.action is ActionKind.MOVE and intent.quantity != 1:
         return _rejected(world, intent, "invalid_quantity")
     if intent.action is not ActionKind.MOVE and intent.target_location_id is not None:
-        return _rejected(world, intent, "unexpected_target_location")
+        target_location = world.locations.get(intent.target_location_id)
+        target_is_connected_facility = (
+            adventurer.location_id == "emberfall"
+            and target_location is not None
+            and intent.target_location_id in world.locations["emberfall"].connections
+            and target_location.connections == ("emberfall",)
+        )
+        if not target_is_connected_facility:
+            return _rejected(world, intent, "unexpected_target_location")
+        target_action = _contextual_action(
+            replace(adventurer, location_id=intent.target_location_id), world, intent.action
+        )
+        if target_action is None:
+            return _rejected(world, intent, "unexpected_target_location")
+        if intent.quantity != 1:
+            return _rejected(world, intent, "invalid_quantity")
+        return _apply_contextual_action(
+            world,
+            intent,
+            replace(adventurer, location_id=intent.target_location_id),
+            target_action,
+        )
 
     contextual_action = _contextual_action(adventurer, world, intent.action)
     if contextual_action is not None:

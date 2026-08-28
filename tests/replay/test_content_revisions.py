@@ -16,14 +16,18 @@ from aincrad.simulation import create_initial_world
 
 def test_packaged_loader_accepts_only_trusted_content_revisions() -> None:
     current = load_packaged_world_fixture()
-    frozen = load_packaged_world_fixture(revision="rules-v2")
+    rules_v2 = load_packaged_world_fixture(revision="rules-v2")
+    rules_v3 = load_packaged_world_fixture(revision="rules-v3")
 
-    assert current["world_id"] == frozen["world_id"] == "glassfrontier"
+    assert current["world_id"] == rules_v2["world_id"] == rules_v3["world_id"] == "glassfrontier"
     assert files("aincrad.content").joinpath(
         "data", "glassfrontier_world_rules_v2.json"
     ).is_file()
+    assert files("aincrad.content").joinpath(
+        "data", "glassfrontier_world_rules_v3.json"
+    ).is_file()
     with pytest.raises(ValueError, match="unsupported content revision"):
-        load_packaged_world_fixture(revision="rules-v2/../../outside")
+        load_packaged_world_fixture(revision="rules-v3/../../outside")
 
 
 
@@ -37,6 +41,20 @@ def test_rules_v2_snapshot_validation_is_independent_of_evolved_current_action_c
     monkeypatch.setattr(fixture_module, "expected_action_kinds", evolved_action_kinds)
 
     frozen = fixture_module.load_packaged_world_fixture(revision="rules-v2")
+
+    assert frozen["world_id"] == "glassfrontier"
+
+
+def test_rules_v3_snapshot_validation_is_independent_of_evolved_current_action_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def evolved_action_kinds(location_id: str) -> tuple[str, ...]:
+        expected = expected_action_kinds(location_id)
+        return (*expected, "wait") if location_id == "emberfall-shop" else expected
+
+    monkeypatch.setattr(fixture_module, "expected_action_kinds", evolved_action_kinds)
+
+    frozen = fixture_module.load_packaged_world_fixture(revision="rules-v3")
 
     assert frozen["world_id"] == "glassfrontier"
 
@@ -62,6 +80,32 @@ def test_schema_v3_rules_v2_replay_uses_frozen_content_when_current_content_evol
 
     def evolved_loader(*, revision: str = "current"):
         if revision == "rules-v2":
+            return frozen
+        if revision == "current":
+            return evolved
+        raise ValueError("unsupported content revision")
+
+    monkeypatch.setattr(scenario_module, "load_packaged_world_fixture", evolved_loader)
+
+    replayed = _default_replay(event_log=fixture_path, verify_hash=True)
+
+    assert replayed.summary.status == "해시 검증 완료"
+
+
+def test_schema_v4_rules_v3_replay_uses_frozen_content_when_current_content_evolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "v4_events_warrior.jsonl"
+    frozen = load_packaged_world_fixture(revision="rules-v3")
+    evolved = deepcopy(load_packaged_world_fixture())
+    future_action = evolved["towns"][0]["facilities"][0]["actions"][0]
+    future_action["id"] = "shop-browse-goods-v2"
+    future_action["outcome_code"] = "facility.browse.v2"
+
+    def evolved_loader(*, revision: str = "current"):
+        if revision == "rules-v2":
+            return load_packaged_world_fixture(revision="rules-v2")
+        if revision == "rules-v3":
             return frozen
         if revision == "current":
             return evolved

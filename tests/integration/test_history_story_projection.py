@@ -33,7 +33,7 @@ def test_history_projects_the_resolved_action_without_an_empty_story_event(tmp_p
     output = StringIO()
     assert main(["history", "show", "1", "--history-root", str(history)], stdout=output) == 0
     assert "새벽별" in output.getvalue()
-    assert "[행동] 새벽별 — 고요한 심지 여관으로 이동했다." in output.getvalue()
+    assert "[행동] 새벽별 — 이끼자락 황야로 이동했다." in output.getvalue()
     assert "[이야기]" not in output.getvalue()
     assert "아무 일" not in output.getvalue()
     assert "동료의 합류" not in output.getvalue()

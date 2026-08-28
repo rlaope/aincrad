@@ -129,10 +129,15 @@ Runner = Callable[..., SimulationResult]
 ReplayRunner = Callable[..., SimulationResult]
 CommentaryProvider = Callable[[MovementCommentaryRequest], MovementCommentaryResult]
 StoryProvider = Callable[[TurnStoryRequest], TurnStoryResult]
-_CURRENT_SCHEMA_VERSION = 4
-_CURRENT_RULES_VERSION = 3
-_VERSIONED_RULES_VERSIONS = {2: 1, 3: 2, 4: 3}
-_VERSIONED_CONTENT_REVISIONS = {2: "rules-v2", 3: "rules-v2", 4: "current"}
+_CURRENT_SCHEMA_VERSION = 5
+_CURRENT_RULES_VERSION = 4
+_VERSIONED_RULES_VERSIONS = {2: 1, 3: 2, 4: 3, 5: 4}
+_VERSIONED_CONTENT_REVISIONS = {
+    2: "rules-v2",
+    3: "rules-v2",
+    4: "rules-v3",
+    5: "current",
+}
 
 
 class _ResizeGeneration:
@@ -698,6 +703,100 @@ def _prompt_for_intent(
         stdout.write(f"1~{ai_index} 사이의 번호를 입력하세요.\n")
 
 
+def _prompt_for_facility_intent_menu(
+    world: WorldState,
+    actor_id: str,
+    facility_id: str,
+    facility_intents: tuple[ActionIntent, ...],
+    *,
+    key_reader: KeyReader,
+    stdout: TextIO,
+    frame_writer: Callable[[str], None] | None,
+) -> ActionIntent | None:
+    """Choose a facility action before the scheduler sees an intent."""
+
+    adventurer = world.adventurers[actor_id]
+    resident = resident_npc_for_location(facility_id)
+    day, hour = divmod(world.tick, 24)
+    context = render_status_context(
+        day=day + 1,
+        hour=hour,
+        location=location_name_ko(facility_id),
+        hp=adventurer.stats.hp,
+        max_hp=adventurer.stats.max_hp,
+        mp=adventurer.stats.mp,
+        max_mp=adventurer.stats.max_mp,
+        level=adventurer.level,
+        party_size=sum(
+            world.adventurers[member_id].alive
+            for member_id in (world.party.member_ids if world.party is not None else (actor_id,))
+        ),
+        gold=adventurer.gold,
+        resources=adventurer.resources,
+        resident_name=resident.display_name if resident is not None else None,
+        resident_role_ko=resident.role_ko if resident is not None else None,
+        width=_screen_width(),
+    )
+    selected = _select_menu(
+        location_name_ko(facility_id),
+        tuple(
+            MenuChoice(_intent_label(intent, world), _intent_description(intent, world))
+            for intent in facility_intents
+        ),
+        facility_intents,
+        key_reader=key_reader,
+        stdout=stdout,
+        allow_back=True,
+        frame_writer=frame_writer,
+        subtitle="이 시설에서 보낼 다음 한 시간의 행동을 고르세요",
+        context=context,
+        width=_screen_width(),
+    )
+    if selected is None:
+        return None
+    assert isinstance(selected, ActionIntent)
+    assert selected.target_location_id == facility_id
+    return selected
+
+
+def _prompt_for_movement_menu(
+    world: WorldState,
+    actor_id: str,
+    *,
+    key_reader: KeyReader,
+    stdout: TextIO,
+    frame_writer: Callable[[str], None] | None,
+    move_intents: tuple[ActionIntent, ...],
+) -> ControlledAction:
+    selected = _select_menu(
+        "이동할 곳",
+        tuple(
+            MenuChoice(
+                location_name_ko(intent.target_location_id or ""),
+                location_description_ko(intent.target_location_id or ""),
+            )
+            for intent in move_intents
+        ),
+        move_intents,
+        key_reader=key_reader,
+        stdout=stdout,
+        allow_back=True,
+        frame_writer=frame_writer,
+        subtitle="현재 위치와 직접 이어진 길만 표시합니다",
+        width=_screen_width(),
+    )
+    if selected is None:
+        return _prompt_for_intent_menu(
+            world,
+            actor_id,
+            key_reader=key_reader,
+            stdout=stdout,
+            frame_writer=frame_writer,
+        )
+    assert isinstance(selected, ActionIntent)
+    return ControlledAction(selected, "user", "user.selected")
+
+
 def _prompt_for_intent_menu(
     world: WorldState,
     actor_id: str,
@@ -707,6 +806,7 @@ def _prompt_for_intent_menu(
     frame_writer: Callable[[str], None] | None = None,
 ) -> ControlledAction:
     allowed = _available_intents(world, actor_id)
+    move_intents = tuple(intent for intent in allowed if intent.action is ActionKind.MOVE)
     frame_width = _screen_width()
     adventurer = world.adventurers[actor_id]
     resident = resident_npc_for_location(adventurer.location_id)
@@ -731,19 +831,58 @@ def _prompt_for_intent_menu(
         resident_role_ko=resident.role_ko if resident is not None else None,
         width=frame_width,
     )
+    facility_labels = {
+        "emberfall-shop": "상점",
+        "emberfall-inn": "여관",
+        "emberfall-quest-hall": "의뢰소",
+        "emberfall-plaza": "광장",
+        "emberfall-tavern": "주점",
+    }
+    facility_ids = tuple(
+        facility_id
+        for facility_id in facility_labels
+        if any(intent.target_location_id == facility_id for intent in allowed)
+    )
+    facility_actions = {
+        facility_id: tuple(
+            intent for intent in allowed if intent.target_location_id == facility_id
+        )
+        for facility_id in facility_ids
+    }
+    local_intents = tuple(intent for intent in allowed if intent.target_location_id is None)
     choices = tuple(
+        MenuChoice(
+            f"{facility_labels[facility_id]} · {location_name_ko(facility_id)}",
+            location_description_ko(facility_id),
+        )
+        for facility_id in facility_ids
+    ) + (
+        (
+            MenuChoice("마을 밖으로 이동", "마을 경계 밖으로 이어진 길을 살펴봅니다"),
+        )
+        if facility_ids
+        else (
+            MenuChoice("이동하기", f"연결된 길 {len(move_intents)}곳을 살펴봅니다"),
+        )
+    ) + tuple(
         MenuChoice(_intent_label(intent, world), _intent_description(intent, world))
-        for intent in allowed
+        for intent in local_intents
     ) + (
         MenuChoice(
             "AI 판단에 맡기기",
             "현재 HP·MP·위치·자원·갈 수 있는 길을 비교해 행동 선택",
         ),
     )
+    choice_values: tuple[object, ...] = (
+        *facility_ids,
+        _MOVE_CHOICE,
+        *local_intents,
+        _AI_CHOICE,
+    )
     selected = _select_menu(
         f"{world.adventurers[actor_id].name}의 행동",
         choices,
-        (*allowed, _AI_CHOICE),
+        choice_values,
         key_reader=key_reader,
         stdout=stdout,
         allow_back=False,
@@ -758,8 +897,87 @@ def _prompt_for_intent_menu(
         return ControlledAction(
             _choose_ai_intent(world, actor_id), "baseline_policy", "policy.baseline"
         )
+    if selected is _MOVE_CHOICE:
+        return _prompt_for_movement_menu(
+            world,
+            actor_id,
+            key_reader=key_reader,
+            stdout=stdout,
+            frame_writer=frame_writer,
+            move_intents=move_intents,
+        )
+    if isinstance(selected, str) and selected in facility_actions:
+        facility_intent = _prompt_for_facility_intent_menu(
+            world,
+            actor_id,
+            selected,
+            facility_actions[selected],
+            key_reader=key_reader,
+            stdout=stdout,
+            frame_writer=frame_writer,
+        )
+        if facility_intent is None:
+            return _prompt_for_intent_menu(
+                world,
+                actor_id,
+                key_reader=key_reader,
+                stdout=stdout,
+                frame_writer=frame_writer,
+            )
+        return ControlledAction(facility_intent, "user", "user.selected")
     assert isinstance(selected, ActionIntent)
     return ControlledAction(selected, "user", "user.selected")
+
+
+def _prompt_for_facility_intent_textual(
+    world: WorldState,
+    actor_id: str,
+    facility_id: str,
+    facility_intents: tuple[ActionIntent, ...],
+    *,
+    interaction: TextualInteraction,
+) -> ActionIntent | None:
+    """Choose one facility service without mutating or scheduling the world."""
+
+    adventurer = world.adventurers[actor_id]
+    resident = resident_npc_for_location(facility_id)
+    day, hour = divmod(world.tick, 24)
+    context = render_status_context(
+        day=day + 1,
+        hour=hour,
+        location=location_name_ko(facility_id),
+        hp=adventurer.stats.hp,
+        max_hp=adventurer.stats.max_hp,
+        mp=adventurer.stats.mp,
+        max_mp=adventurer.stats.max_mp,
+        level=adventurer.level,
+        party_size=sum(
+            world.adventurers[member_id].alive
+            for member_id in (world.party.member_ids if world.party is not None else (actor_id,))
+        ),
+        gold=adventurer.gold,
+        resources=adventurer.resources,
+        resident_name=resident.display_name if resident is not None else None,
+        resident_role_ko=resident.role_ko if resident is not None else None,
+        width=80,
+    )
+    selected = interaction.choose(
+        location_name_ko(facility_id),
+        tuple(
+            MenuOption[object](
+                _intent_label(intent, world), _intent_description(intent, world), intent
+            )
+            for intent in facility_intents
+        ),
+        subtitle="이 시설에서 보낼 다음 한 시간의 행동을 고르세요",
+        context=context,
+        allow_back=True,
+    )
+    if selected is None:
+        return None
+    assert isinstance(selected, ActionIntent)
+    assert selected.target_location_id == facility_id
+    return selected
 
 
 def _prompt_for_intent_textual(
@@ -774,7 +992,11 @@ def _prompt_for_intent_textual(
 ) -> ControlledAction:
     allowed = _available_intents(world, actor_id)
     move_intents = tuple(intent for intent in allowed if intent.action is ActionKind.MOVE)
-    local_intents = tuple(intent for intent in allowed if intent.action is not ActionKind.MOVE)
+    local_intents = tuple(
+        intent
+        for intent in allowed
+        if intent.action is not ActionKind.MOVE and intent.target_location_id is None
+    )
     adventurer = world.adventurers[actor_id]
     resident = resident_npc_for_location(adventurer.location_id)
     party_size = sum(
@@ -805,22 +1027,26 @@ def _prompt_for_intent_textual(
         "emberfall-plaza": "광장",
         "emberfall-tavern": "주점",
     }
-    facility_intents = tuple(
-        intent
-        for intent in move_intents
-        if adventurer.location_id == "emberfall"
-        and intent.target_location_id in facility_labels
+    facility_ids = tuple(
+        facility_id
+        for facility_id in facility_labels
+        if any(intent.target_location_id == facility_id for intent in allowed)
     )
-    route_intents = tuple(intent for intent in move_intents if intent not in facility_intents)
-    if facility_intents:
+    facility_actions = {
+        facility_id: tuple(
+            intent for intent in allowed if intent.target_location_id == facility_id
+        )
+        for facility_id in facility_ids
+    }
+    route_intents = move_intents
+    if facility_ids:
         movement_options: tuple[MenuOption[object], ...] = tuple(
             MenuOption[object](
-                f"{facility_labels[intent.target_location_id or '']} · "
-                f"{location_name_ko(intent.target_location_id or '')}",
-                location_description_ko(intent.target_location_id or ""),
-                intent,
+                f"{facility_labels[facility_id]} · {location_name_ko(facility_id)}",
+                location_description_ko(facility_id),
+                facility_id,
             )
-            for intent in facility_intents
+            for facility_id in facility_ids
         ) + (
             MenuOption[object](
                 "마을 밖으로 이동",
@@ -871,6 +1097,23 @@ def _prompt_for_intent_textual(
             commentary_provider=commentary_provider,
             move_intents=route_intents,
         )
+    if isinstance(selected, str) and selected in facility_actions:
+        facility_intent = _prompt_for_facility_intent_textual(
+            world,
+            actor_id,
+            selected,
+            facility_actions[selected],
+            interaction=interaction,
+        )
+        if facility_intent is None:
+            return _prompt_for_intent_textual(
+                world,
+                actor_id,
+                interaction=interaction,
+                identity_profile=identity_profile,
+                commentary_provider=commentary_provider,
+            )
+        return ControlledAction(facility_intent, "user", "user.selected")
     assert isinstance(selected, ActionIntent)
     return ControlledAction(selected, "user", "user.selected")
 
@@ -1979,7 +2222,7 @@ def _strict_replay_versioned(
         "final_tick",
         "final_world_digest",
     }
-    if expected_version in {3, 4}:
+    if expected_version in {3, 4, 5}:
         init_keys.add("identity")
     if not isinstance(init, dict) or set(init) != init_keys:
         raise ValueError("invalid versioned run initialization")
@@ -2001,7 +2244,7 @@ def _strict_replay_versioned(
         or len(init["final_world_digest"]) != 64
     ):
         raise ValueError("unsupported versioned run initialization")
-    if expected_version in {3, 4}:
+    if expected_version in {3, 4, 5}:
         identity = init["identity"]
         if not isinstance(identity, dict):
             raise ValueError("versioned run identity must be an object")
@@ -2250,7 +2493,7 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
         and records[0].event.get("record_type") == "run_init"
     ):
         schema_version = records[0].event.get("schema_version")
-        if type(schema_version) is not int or schema_version not in {2, 3, 4}:
+        if type(schema_version) is not int or schema_version not in {2, 3, 4, 5}:
             raise ValueError("unsupported versioned run initialization")
         return _strict_replay_versioned(
             records,

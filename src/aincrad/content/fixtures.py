@@ -405,9 +405,47 @@ def _rules_v2_expected_action_kinds(location_id: str) -> tuple[str, ...]:
     return _RULES_V2_ACTION_KINDS[location_id]
 
 
+_RULES_V3_ACTION_KINDS: Mapping[str, tuple[str, ...]] = {
+    "emberfall": ("observe",),
+    "emberfall-shop": ("browse_goods", "buy_supplies", "sell_salvage", "talk_orrin"),
+    "emberfall-inn": ("eat_inn_meal", "lodge", "store_belongings", "talk_brann"),
+    "emberfall-quest-hall": ("list_contracts", "turn_in_contract", "ask_vela_advice"),
+    "emberfall-plaza": ("read_notices", "request_directions", "talk_pell"),
+    "emberfall-tavern": (
+        "view_tavern_menu",
+        "order_drink",
+        "buy_meal",
+        "hear_rumor",
+        "talk_sena",
+    ),
+    "mossreach": ("hunt", "gather", "scout", "camp"),
+    **{f"vault-{depth}": ("scout", "search", "fight") for depth in range(1, 10)},
+    "vault-10": ("scout", "search", "challenge"),
+}
+
+_RULES_V3_FACILITY_SERVICES: Mapping[str, tuple[str, ...]] = {
+    "emberfall-shop": ("browse_goods", "buy_supplies", "sell_salvage", "talk_orrin"),
+    "emberfall-inn": ("eat_inn_meal", "rest", "store_belongings", "talk_brann"),
+    "emberfall-quest-hall": ("list_contracts", "turn_in_contract", "ask_vela_advice"),
+    "emberfall-plaza": ("read_notices", "request_directions", "talk_pell"),
+    "emberfall-tavern": (
+        "view_tavern_menu",
+        "order_drink",
+        "buy_meal",
+        "hear_rumor",
+        "talk_sena",
+    ),
+}
+
+
+def _rules_v3_expected_action_kinds(location_id: str) -> tuple[str, ...]:
+    return _RULES_V3_ACTION_KINDS[location_id]
+
+
 _PACKAGED_WORLD_RESOURCES: Mapping[str, str] = {
     "current": "glassfrontier_world.json",
     "rules-v2": "glassfrontier_world_rules_v2.json",
+    "rules-v3": "glassfrontier_world_rules_v3.json",
 }
 
 
@@ -423,9 +461,17 @@ def load_packaged_world_fixture(*, revision: str = "current") -> LoadedWorldFixt
         return load_world_fixture(
             path,
             expected_kinds_for=(
-                _rules_v2_expected_action_kinds if revision == "rules-v2" else None
+                _rules_v2_expected_action_kinds
+                if revision == "rules-v2"
+                else _rules_v3_expected_action_kinds
+                if revision == "rules-v3"
+                else None
             ),
             expected_facility_services=(
-                _RULES_V2_FACILITY_SERVICES if revision == "rules-v2" else None
+                _RULES_V2_FACILITY_SERVICES
+                if revision == "rules-v2"
+                else _RULES_V3_FACILITY_SERVICES
+                if revision == "rules-v3"
+                else None
             ),
         )

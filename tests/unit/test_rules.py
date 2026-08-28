@@ -437,6 +437,109 @@ def test_contextual_non_move_rejects_unexpected_target_without_mutation() -> Non
     assert events[0].reason == "unexpected_target_location"
 
 
+def test_facility_entry_and_contextual_action_resolve_atomically_from_emberfall() -> None:
+    world = create_initial_world()
+    actor = world.adventurers["rhea-vale"]
+    intent = ActionIntent(
+        actor.id,
+        ActionKind.BUY_SUPPLIES,
+        target_location_id="emberfall-shop",
+    )
+
+    next_world, events = apply_intent(world, intent)
+
+    event = cast(ActionSucceeded, events[0])
+    entered = next_world.adventurers[actor.id]
+    assert entered.location_id == "emberfall-shop"
+    assert entered.gold == actor.gold - 3
+    assert event.target_location_id == "emberfall-shop"
+    assert dict(event.details)["location_id"] == "emberfall-shop"
+    assert dict(event.details)["action_id"] == "emberfall-shop-buy-supplies"
+
+
+@pytest.mark.parametrize(
+    ("intent", "reason"),
+    (
+        (
+            ActionIntent(
+                "rhea-vale",
+                ActionKind.EAT_INN_MEAL,
+                target_location_id="emberfall-inn",
+            ),
+            "insufficient_gold",
+        ),
+        (
+            ActionIntent(
+                "rhea-vale",
+                ActionKind.BUY_SUPPLIES,
+                target_location_id="mossreach",
+            ),
+            "unexpected_target_location",
+        ),
+        (
+            ActionIntent(
+                "rhea-vale",
+                ActionKind.OBSERVE,
+                target_location_id="emberfall-shop",
+            ),
+            "unexpected_target_location",
+        ),
+        (
+            ActionIntent(
+                "rhea-vale",
+                ActionKind.BUY_SUPPLIES,
+                target_location_id="emberfall-shop",
+                quantity=True,
+            ),
+            "invalid_quantity",
+        ),
+    ),
+)
+def test_invalid_facility_entry_contextual_intents_are_atomic(
+    intent: ActionIntent, reason: str
+) -> None:
+    world = create_initial_world()
+    if reason == "insufficient_gold":
+        actor = replace(world.adventurers[intent.adventurer_id], gold=0)
+        world = replace(world, adventurers={**world.adventurers, actor.id: actor})
+
+    next_world, events = apply_intent(world, intent)
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].target_location_id == intent.target_location_id
+    assert events[0].reason == reason
+
+
+def test_hidden_facility_target_is_rejected_without_location_or_economy_mutation() -> None:
+    world = create_initial_world()
+    town = replace(
+        world.locations["emberfall"],
+        connections=tuple(
+            location_id
+            for location_id in world.locations["emberfall"].connections
+            if location_id != "emberfall-shop"
+        ),
+    )
+    world = replace(world, locations={**world.locations, town.id: town})
+    actor = world.adventurers["rhea-vale"]
+
+    next_world, events = apply_intent(
+        world,
+        ActionIntent(
+            actor.id,
+            ActionKind.BUY_SUPPLIES,
+            target_location_id="emberfall-shop",
+        ),
+    )
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].reason == "unexpected_target_location"
+    assert next_world.adventurers[actor.id].gold == actor.gold
+    assert next_world.adventurers[actor.id].location_id == actor.location_id
+
+
 def test_every_fixture_contextual_action_resolves_with_its_grounded_action_id() -> None:
     world = create_initial_world()
     base_actor = world.adventurers["rhea-vale"]

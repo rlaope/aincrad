@@ -54,20 +54,42 @@ def test_fixture_catalog_covers_every_glass_frontier_location_with_canonical_act
     ]
 
 
-def test_available_actions_expose_connected_moves_but_hide_unrepresentable_turn_ins() -> None:
+def test_available_actions_expose_atomic_facility_engagements_and_connected_routes() -> None:
     world = create_initial_world()
     actor_id = "rhea-vale"
 
     town_intents = available_action_intents(world, actor_id)
-    assert {(intent.action, intent.target_location_id) for intent in town_intents} == {
-        (ActionKind.MOVE, "emberfall-shop"),
-        (ActionKind.MOVE, "emberfall-inn"),
-        (ActionKind.MOVE, "emberfall-quest-hall"),
-        (ActionKind.MOVE, "emberfall-plaza"),
-        (ActionKind.MOVE, "emberfall-tavern"),
-        (ActionKind.MOVE, "mossreach"),
-        (ActionKind.OBSERVE, None),
+
+    assert (ActionKind.MOVE, "mossreach") in {
+        (intent.action, intent.target_location_id) for intent in town_intents
     }
+    assert (ActionKind.OBSERVE, None) in {
+        (intent.action, intent.target_location_id) for intent in town_intents
+    }
+    assert all(
+        not (
+            intent.action is ActionKind.MOVE
+            and intent.target_location_id is not None
+            and intent.target_location_id.startswith("emberfall-")
+        )
+        for intent in town_intents
+    )
+    for facility_id in (
+        "emberfall-shop",
+        "emberfall-inn",
+        "emberfall-quest-hall",
+        "emberfall-plaza",
+        "emberfall-tavern",
+    ):
+        expected = {
+            action.kind
+            for action in world.locations[facility_id].contextual_actions
+        }
+        assert {
+            intent.action
+            for intent in town_intents
+            if intent.target_location_id == facility_id
+        } == expected
 
     quest_hall = world.adventurers[actor_id]
     world = world.__class__(
