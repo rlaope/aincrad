@@ -135,7 +135,9 @@ Smallville의 free-form 일일 계획을 그대로 저장하지 않습니다.
    한 번 증가시킵니다.
 9. **Persist** — action, encounter, relationship, schedule, memory event와 final state commitment를
    한 tick record로 저장합니다.
-10. **Projection** — 저장까지 끝난 결과만 읽어 한국어 장면·대화·해설을 렌더링합니다.
+10. **Projection** — 저장까지 끝난 결과, 세계관, identity, 관계, 파티, 최근 canonical 사건만
+    선택적 AI storyteller에 주어 한국어 장면·대화·해설을 자유롭게 렌더링합니다. prose는 실행마다
+    달라도 되며 장면을 닫은 뒤에만 다음 tick 선택으로 넘어갑니다.
 
 기존 “현재 살아 있는 파티원 모두가 한 행동” 규칙은 유지합니다. 주민 actor 확대 단계에서는
 별도의 required resident actor set을 같은 batch에 추가합니다. 시설 service NPC 전부를 무조건
@@ -216,13 +218,14 @@ edge를 따라 `run_init` 또는 fixture fact까지 역추적합니다. 근거�
 - committed v2 replay compatibility
 - Textual full-screen, 40×24·80×24 responsive flow
 - 추천 최대 세 곳과 `기타 목적지`
-- simulation-first 한국어 turn narrative
-- bounded Hermes/Kimi adapter와 deterministic fallback
+- 장소별 fixture-backed action과 achievement-only EXP
+- simulation-first, post-persist 자유 AI turn narrative
+- bounded Hermes/Kimi storyteller와 deterministic local fallback
 
 ### 수정·확장
 
-- movement commentary adapter를 dialogue·social digest에도 사용할 수 있는 projection provider로
-  일반화합니다. 현재 destination whitelist 경계는 그대로 유지합니다.
+- movement commentary는 이동 하위 안내로 유지하고, post-turn `storytelling` boundary가
+  dialogue·social digest·시간별 장면을 담당합니다.
 - identity는 rules modifier가 아니라 어떤 사회 신호를 해설에서 강조할지 정하는 lens로만 씁니다.
 - action screen 앞뒤에 주민·관계·사회 장면 관찰 흐름을 추가합니다.
 

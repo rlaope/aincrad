@@ -22,11 +22,17 @@
 - 매시간 사용자는 주인공만 조작하고 동료는 자신의 관찰 정보로 행동한 뒤 일괄 판정
 - 행동 화면의 마지막 항목에서 `AI 판단에 맡기기` 지원
 - 지역·시설·던전 이름은 플레이 화면에서 자연스러운 한국어 표시명으로 제공
-- 이동은 물리적 조건과 사회적 의미가 설명된 추천 최대 3곳과 `기타 목적지`로 압축
-- 홈의 `해설 AI`에서 오프라인 규칙 해설이나 사용자 인증 Hermes/Kimi를 선택
-- 한 시간 판정 뒤 각 인물의 실제 행동·장소·피해·회복·성장을 사건 기반 서사로 표시
+- 잿불마을 행동 화면에는 상점·여관·의뢰소·광장·주점을 내부 시설로 직접 표시하고,
+  마을 밖 경로만 물리적 조건과 사회적 의미가 설명된 이동 화면으로 분리
+- 현재 장소의 fixture-backed 행동만 표시: 마을 관찰, 시설별 거래·숙박·의뢰·공지·식사·소문,
+  사냥터의 사냥·채집·정찰·야영, 던전의 정찰·수색·전투·보스 도전
+- 홈의 `스토리 AI`는 기본적으로 사용자 인증 Hermes/Kimi를 사용하고 실패 시 로컬 서사로 대체
+- 한 시간 결과·보상·EXP와 history를 먼저 확정한 뒤, 세계관·identity·관계·파티·최근 사건을
+  제공받은 AI가 자유로운 한국어 장면을 서술
+- 한 시간 장면은 한 글자씩 재생하며 문장부호에서 잠시 쉬고, Enter로 전체 표시한 뒤
+  다시 Enter를 눌러 다음 시간 선택으로 진행
 - 중앙 Story Director가 관찰 가능한 환경에서 퀘스트·영입·이탈 proposal을 제안
-- 이동, 휴식, 채집, 거래, 대기
+- 이동 자체에는 EXP가 없으며 채집·사냥·정찰·수색·전투·도전·의뢰 완료 성취만 EXP 대상
 - 작업·일화·사실·사회·전략 기억
 - JSONL 이벤트 로그와 해시 체인 검증
 - 날짜·시간별 한국어 터미널 관찰
@@ -64,13 +70,16 @@ aincrad
 고릅니다. TUI는 실제
 터미널 폭에 맞춘 단일 패널 안에서 선택 항목과 한국어 지역명, 시간·HP/MP·레벨·파티
 상태를 표시합니다. 선택 뒤에는 살아 있는 파티원 전원의 행동을 먼저 일괄 판정하고
-이벤트와 히스토리를 기록한 다음, 누가 무엇을 했고 어떤 결과가 났는지 한 시간의 장면으로
-보여줍니다. 이 장면을 읽은 뒤 다음 시간을 진행하거나 저장하고 홈으로 돌아갈 수 있습니다.
-이동 화면은 결정론적으로 추천한 목적지 최대 세 곳과 전체 합법 경로를 여는 `기타 목적지`만
-표시합니다. 각 목적지는 현재 장소와 HP/MP에 근거한 물리적 조건과, 선택한 정체성에 따른
-사회 조사 관점을 함께 설명합니다. 홈의 `해설 AI`에서 `Kimi ultrafast`를 선택하면 설치된
-Hermes의 기존 인증을 사용해 설명만 보강합니다. 실행 파일 부재, 인증 실패, timeout,
-과대·비정상 응답은 즉시 로컬 규칙 해설로 대체되며 세계 판정과 replay에는 영향을 주지 않습니다.
+이벤트와 히스토리를 기록한 다음, Kimi가 확정 사실과 세계관·identity·관계·파티·최근 사건을
+바탕으로 한 시간의 장면을 자유롭게 서술합니다. AI 문장은 실행마다 달라도 되며 canonical
+event나 hash에는 저장되지 않습니다. 장면은 한 글자씩 나타나고 문장부호마다 잠시 멈춥니다.
+재생 중 Enter는 전체 문장을 즉시 표시하며, 표시 완료 후 Enter를 눌러야 다음 시간으로 갑니다.
+잿불마을에서는 상점·여관·의뢰소·광장·주점이 행동 화면에 내부 시설로 직접 표시됩니다.
+`마을 밖으로 이동` 또는 다른 지역의 이동 화면은 결정론적으로 추천한 목적지 최대 세 곳과
+전체 합법 경로를 여는 `기타 목적지`를 표시합니다. 각 목적지는 현재 장소와 HP/MP에 근거한 물리적 조건과, 선택한 정체성에 따른
+사회 조사 관점을 함께 설명합니다. 홈의 `스토리 AI`에서 Kimi 또는 로컬 fallback을 바꿀 수
+있습니다. 실행 파일 부재, 인증 실패, timeout, 과대·비정상 응답은 즉시 확정 사건 기반 로컬
+서사로 대체되며 세계 판정과 replay에는 영향을 주지 않습니다.
 `AI 판단에 맡기기`는 현재 HP·MP·위치·자원·갈 수 있는 길만 비교하는 결정론적 baseline
 policy에 주인공의 이번 행동 선택을 위임합니다. `히스토리`에서는 같은 키보드 화면으로 회차 목록과 상세 기록을
 조회합니다. 기본 히스토리는 `runs/history`, 홈에서 생성한 replay 로그는
@@ -103,11 +112,12 @@ aincrad replay runs/demo/events.jsonl --verify-hash
 장소, 관찰된 행동, 관계 점수, 콘텐츠 catalog에서 생성된 Story proposal을 규칙 엔진이
 검증해 처리합니다. 확정 actor proposal, StoryIntent, 수락·거부 결과는 완료 tick 수와
 최종 world digest를 약정하는 `run_end` 포함 v3 해시 체인 로그에 저장됩니다. v3의
-`run_init`은 검증된 identity profile을 포함하고, 기존 v2 로그는 변경 없이 계속 replay됩니다.
+`run_init`은 검증된 identity profile과 rules version 2를 포함하고, 기존 v2/rules version 1 로그는
+version-isolated legacy rules로 변경 없이 계속 replay됩니다.
 외부 AI 문장은 tick, hash, history에 저장하지 않습니다. replay는
 AI policy나 Story Director를 다시 호출하지 않습니다. 성장,
-던전 위험, 영구 사망도 결정론적 runtime과 replay에 연결되어 있습니다. 실제 전투 명령,
-보스 처치 판정 및 퀘스트 보상은 다음 구현 단계입니다.
+던전 이동 위험, 전투·보스 도전 피해, 영구 사망도 runtime과 replay에 연결되어 있습니다.
+보스 처치·전이와 실제 의뢰 완료 상태/보상은 다음 구현 단계입니다.
 
 구현 중인 CLI의 최신 옵션은 다음 명령으로 확인할 수 있습니다.
 
@@ -129,12 +139,13 @@ uv run mypy src
 src/aincrad/domain/       순수 도메인 모델과 규칙
 src/aincrad/simulation/   시간과 행동 오케스트레이션
 src/aincrad/agents/       관찰, 정책, 기억
-src/aincrad/commentary/   이동 전 해설과 선택적 Hermes/Kimi adapter
+src/aincrad/commentary/   이동 후보의 물리·사회 안내 projection
+src/aincrad/storytelling/ 판정 후 자유 AI 장면과 로컬 fallback
 src/aincrad/persistence/  이벤트 로그, 검증, 재생
 src/aincrad/history/      시간·일·회차별 영구 기록
-src/aincrad/tui/          터미널 투영
-content/                  독자 세계관 콘텐츠
-fixtures/                 결정론적 테스트 입력
+src/aincrad/tui/          Textual 메뉴와 한 글자 story projection
+src/aincrad/content/      loader, 규칙 NPC, contextual action catalog
+src/aincrad/content/data/ wheel에 포함되는 독자 세계관 콘텐츠 정본
 ```
 
 ## 문서

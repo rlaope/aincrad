@@ -17,10 +17,10 @@ port하지 않고 기존 logical-hour kernel 위에 단계적으로 추가합니
 ```text
 Actor Perception -> User/Baseline Policy -> ActionIntent --+
 StoryPerception -> Story Director -> StoryIntent -----------+-> Validator/Resolver
-Public state projection + Identity -> Commentary ----------> Terminal Projection only
                                                             -> DomainEvent
                                                             -> Event Store / Replay
                                                             -> History / Terminal Projection
+Persisted result + world/identity/recent events -> AI Storyteller -> Terminal Projection only
 ```
 
 ## 경계
@@ -32,20 +32,24 @@ Public state projection + Identity -> Commentary ----------> Terminal Projection
 - `persistence`는 사건을 정규화해 JSONL로 저장하고 해시 체인을 검증합니다.
 - `tui`는 사건과 투영 상태를 읽기만 합니다.
 - 일반 NPC는 첫 버전에서 독립 AI가 아닌 규칙 기반 서비스입니다.
-- `commentary`는 공개 현재 위치·HP/MP projection, canonical 합법 목적지, run identity만 받아 이동 전
-  물리·사회 해설을 만듭니다. 외부 문장은 untrusted projection이며 action legality,
-  state mutation, event/history/hash에 들어가지 않습니다. Hermes subprocess는 direct argv,
-  bounded stdin/stdout/stderr/time/process group과 strict destination whitelist를 사용하고 모든
-  실패를 결정론적 로컬 해설로 대체합니다.
+- `commentary`는 이동 하위 화면의 물리·사회 안내만 만들고 합법 목적지 집합과 순서를 바꾸지 않습니다.
+- `storytelling`은 판정·progression·Story resolution·history append 뒤 확정된 결과와 공개 세계관,
+  run identity, 관계, 파티, 최근 canonical 장면을 받아 자유로운 한국어 prose를 만듭니다. 외부 문장은
+  실행마다 달라도 되는 untrusted projection이며 state/event/history/hash에 들어가지 않습니다.
+  Hermes subprocess는 direct argv, bounded stdin/stdout/stderr/time/process group, environment allowlist,
+  strict JSON과 sanitization을 사용하고 모든 실패를 확정 사건 기반 로컬 서사로 대체합니다.
 - 대화형 TUI는 Textual의 widget tree와 diff compositor를 사용합니다. Textual이 raw input,
   alternate screen, cursor, focus, resize를 소유하고 종료·예외에도 terminal 상태를 복원합니다.
   simulation은 worker thread에서 결정론적으로 실행되며 `choose`/`input_text` interaction
   boundary를 통해서만 Textual main loop에 선택을 요청합니다. headless/replay/history CLI는
   full-screen app과 독립적으로 동작합니다.
+- 마을 root는 단일 `관찰` 장소가 아니라 내부 시설을 직접 고르는 hub로 투영합니다. 시설 진입은
+  canonical `MOVE`를 유지하고, 마을 밖 경로만 별도 이동 추천 화면으로 보냅니다.
 - 플레이어에게 보이는 지역명은 canonical location ID와 분리된 한국어 projection입니다.
   한 시간의 서사는 모든 actor intent의 일괄 판정, progression, Story resolution, history append가
   끝난 뒤 확정된 `DomainEvent`와 최종 상태만 읽어 생성하며 세계 상태를 다시 변경하지 않습니다.
-  서사 화면을 닫은 뒤에만 다음 시간 진행 여부를 묻습니다.
+  서사는 전용 Textual screen에서 한 글자씩 재생되고 문장부호마다 추가 pause를 둡니다.
+  재생 중 Enter는 전체 표시, 표시 완료 후 Enter는 닫기이며, 그 뒤에만 다음 시간 진행 여부를 묻습니다.
 
 ## 시간
 
@@ -62,6 +66,8 @@ Public state projection + Identity -> Commentary ----------> Terminal Projection
 - strict replay는 JSON 정수 field에 `type(value) is int`를 요구해 Python에서 `true == 1`인
   언어 특성이 canonical scalar type 검증을 우회하지 못하게 합니다.
 - v2 validator는 별도 strict branch로 유지되며 기존 로그를 rewrite하거나 자동 migration하지 않습니다.
+- 새 v3 실행은 rules version 2를 기록합니다. committed v2/rules version 1은 location affordance와
+  legacy EXP semantics를 격리한 replay-only branch에서 재적용합니다.
 - human identity는 `WorldState`나 rules modifier가 아니라 hash-covered `run_init`과 history
   metadata입니다. 해설의 관점만 바꾸며 목적지 집합·추천 순서·판정을 바꾸지 않습니다.
 - replay는 policy나 Story Director를 재호출하지 않고 저장된 proposal을 규칙 엔진에 다시 적용해
@@ -86,7 +92,7 @@ Public state projection + Identity -> Commentary ----------> Terminal Projection
 관찰 facts에서 생성되는 결정론적 baseline입니다. 영구 사망과 boss facts는 Director의 재량
 proposal 밖에 있으며 코어 규칙이 소유합니다.
 
-세계 수직 절편은 내부 시설 5곳이 있는 마을 1개, 사냥터 1개, 10단계 던전과
-보스방입니다. 한 tick은 세계 시간 1시간이며 현재 라이브 파티에서 수집된 행동을 같은
-tick에서 일괄 판정한 뒤 시계가 한 번 진행됩니다. 전투·보스 처치·퀘스트 보상은 이 시간
-배치 커널 위에 추가합니다.
+세계 수직 절편은 내부 시설 5곳이 있는 마을 1개, 사냥터 1개, 10단계 던전과 보스방입니다.
+각 장소는 fixture-backed 합법 행동 catalog를 갖고 시설 거래·숙박·의뢰·공지·식사·소문,
+사냥터 사냥·채집·정찰·야영, 던전 정찰·수색·전투·보스 도전을 제공합니다. 전투와 보스 도전은
+canonical 피해와 영구 사망을 판정합니다. 보스 처치·전이와 의뢰 완료 보상은 아직 미구현입니다.

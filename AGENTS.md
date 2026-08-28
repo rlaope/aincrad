@@ -15,8 +15,10 @@ Aincrad는 고정된 세계 규칙 위에서 AI 모험가의 판단·기억·협
 
 - AI/사용자는 `ActionIntent`만 선택합니다. 세계 상태와 결과는 규칙 엔진만 변경합니다.
 - AI에는 `Perception`으로 관찰 가능한 정보만 제공합니다. 숨겨진 세계 상태를 전달하지 않습니다.
-- 선택적 외부 AI는 이동 전 물리·사회 해설 projection만 만들며 합법 행동, 추천 순서,
-  세계 상태, 이벤트, history, replay hash를 변경하지 않습니다.
+- 선택적 외부 AI는 엔진이 한 시간의 결과·보상·EXP를 확정하고 저장한 뒤 세계관, 장소,
+  identity, 관계, 파티, 최근 canonical 사건을 바탕으로 자유로운 한국어 장면 projection을
+  만듭니다. 문장은 실행마다 달라도 되며 합법 행동, 결과, 세계 상태, 이벤트, history,
+  replay hash를 변경하지 않습니다.
 - 인간 identity profile은 versioned run metadata이며 `WorldState`와 rules modifier가 아닙니다.
 - 내부 chain-of-thought를 저장하거나 출력하지 않습니다. `reason_code`와 근거 이벤트를 사용합니다.
 - 같은 초기 상태, 규칙 버전, seed, 행동열은 같은 이벤트 로그와 최종 상태를 만들어야 합니다.
@@ -36,13 +38,16 @@ Aincrad는 고정된 세계 규칙 위에서 AI 모험가의 판단·기억·협
 - fixture의 모험가 3명은 콘텐츠 후보 데이터이며 라이브 시작 파티 3명을 뜻하지 않습니다.
 - HP/MP는 항상 0과 최대치 사이입니다.
 - EXP 곡선은 명시적이고 완만해야 하며 최대 레벨은 100입니다.
+- 이동·관찰·휴식·거래·단순 정보 열람에는 EXP를 지급하지 않습니다. 채집·사냥·정찰·수색·
+  전투·보스 도전·의뢰 완료처럼 명시된 canonical 성취에만 provenance가 있는 EXP를 지급합니다.
 - 사망은 영구적입니다. 죽은 인물은 행동·회복·MP 소비·EXP 획득을 할 수 없습니다.
 - 선택된 주인공이 사망하면 해당 회차의 이야기를 종료하고 `character_end`를 한 번 기록합니다.
 
 ## 세계관 정본
 
 세계 ID는 `glassfrontier`, 제목은 **The Glass Frontier**입니다.
-콘텐츠 정본은 `fixtures/glassfrontier_world.json`이며 loader/validator와 반드시 함께 변경합니다.
+콘텐츠 정본은 package resource
+`src/aincrad/content/data/glassfrontier_world.json`이며 loader/validator와 반드시 함께 변경합니다.
 
 ### Emberfall
 
@@ -81,7 +86,7 @@ life-event catalog, validator, replay 테스트를 함께 갱신합니다.
 - `src/aincrad/persistence/` — canonical JSONL, SHA-256 체인, strict replay
 - `src/aincrad/history/` — 시간·일·회차·인물 결말 append-only 기록
 - `src/aincrad/tui/` — 제어문자를 무력화하는 80열 한국어 투영
-- `fixtures/` — 독자 세계관의 결정론적 콘텐츠 정본
+- `src/aincrad/content/data/` — wheel에도 포함되는 독자 세계관의 결정론적 콘텐츠 정본
 - `tests/` — unit, property, integration, replay, history, e2e 검증
 
 의존 방향은 `domain`이 가장 안쪽입니다. `domain`에서 CLI, TUI, 네트워크,
