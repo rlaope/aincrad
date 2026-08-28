@@ -1,13 +1,12 @@
 from pathlib import Path
 
 from aincrad.cli import _starting_world
-from aincrad.content import load_world_fixture
+from aincrad.content import load_packaged_world_fixture
 from aincrad.content.events import LIFE_EVENT_CATALOG, LifeEventType
 from aincrad.domain import CharacterClass
 from aincrad.simulation.scenario import create_initial_world
 
 ROOT = Path(__file__).parents[2]
-
 
 def test_initial_scenario_exposes_the_three_fixture_candidate_adventurers() -> None:
     world = create_initial_world()
@@ -61,7 +60,7 @@ def test_all_five_emberfall_facilities_are_reachable_without_self_edges() -> Non
 
 
 def test_runtime_location_names_match_the_canonical_fixture() -> None:
-    fixture = load_world_fixture(ROOT / "fixtures" / "glassfrontier_world.json")
+    fixture = load_packaged_world_fixture()
     world = create_initial_world()
     town = fixture["towns"][0]
     fixture_locations = [
@@ -77,7 +76,7 @@ def test_runtime_location_names_match_the_canonical_fixture() -> None:
 
 
 def test_runtime_vault_completion_matches_fixture_and_catalog() -> None:
-    fixture = load_world_fixture(ROOT / "fixtures" / "glassfrontier_world.json")
+    fixture = load_packaged_world_fixture()
     completion = fixture["dungeons"][0]["floors"][-1]["completion"]
     vault = create_initial_world().locations["vault-10"]
     boss_clear = next(

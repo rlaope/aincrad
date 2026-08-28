@@ -8,10 +8,105 @@ from .models import (
     ActionKind,
     Activity,
     Adventurer,
+    ContextualAction,
     LocationKind,
     WorldState,
 )
-from .progression import restore_stats
+from .progression import apply_damage, restore_stats
+
+_CONTEXTUAL_ACTIVITY = {
+    ActionKind.OBSERVE: Activity.OBSERVING,
+    ActionKind.SCOUT: Activity.SCOUTING,
+    ActionKind.SEARCH: Activity.SEARCHING,
+    ActionKind.FIGHT: Activity.FIGHTING,
+    ActionKind.HUNT: Activity.FIGHTING,
+    ActionKind.CHALLENGE: Activity.FIGHTING,
+    ActionKind.CAMP: Activity.CAMPING,
+    ActionKind.GATHER: Activity.GATHERING,
+}
+
+
+def _contextual_action(
+    adventurer: Adventurer, world: WorldState, action: ActionKind | str
+) -> ContextualAction | None:
+    if not isinstance(action, ActionKind):
+        return None
+    matches = tuple(
+        configured
+        for configured in world.locations[adventurer.location_id].contextual_actions
+        if configured.kind is action
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def _apply_contextual_action(
+    world: WorldState,
+    intent: ActionIntent,
+    adventurer: Adventurer,
+    action: ContextualAction,
+) -> tuple[WorldState, tuple[DomainEvent, ...]]:
+    if action.requires_completed_contract:
+        return _rejected(world, intent, "completed_contract_not_representable")
+    if action.gold_per_resource and intent.quantity <= 0:
+        return _rejected(world, intent, "invalid_quantity")
+    if action.gold_delta < 0 and adventurer.gold < -action.gold_delta:
+        return _rejected(world, intent, "insufficient_gold")
+    if action.gold_per_resource and adventurer.resources < intent.quantity:
+        return _rejected(world, intent, "insufficient_resources")
+
+    gold_delta = action.gold_delta
+    resources = adventurer.resources + action.resource_delta
+    if action.gold_per_resource:
+        gold_delta += action.gold_per_resource * intent.quantity
+        resources -= intent.quantity
+    updated = replace(
+        adventurer,
+        gold=adventurer.gold + gold_delta,
+        resources=resources,
+        activity=_CONTEXTUAL_ACTIVITY.get(action.kind, Activity.SERVICING),
+    )
+    before_stats = updated.stats
+    updated = restore_stats(updated, hp=action.restore_hp, mp=action.restore_mp)
+    encounter_damage = (
+        1
+        if action.kind is ActionKind.FIGHT
+        else 3
+        if action.kind is ActionKind.CHALLENGE
+        else 0
+    )
+    if encounter_damage:
+        updated = apply_damage(
+            updated,
+            min(updated.stats.hp, encounter_damage),
+            tick=world.tick,
+            cause=action.encounter_code or "contextual_encounter",
+        )
+    details: list[tuple[str, str]] = [
+        ("location_id", adventurer.location_id),
+        ("action_id", action.id),
+        ("action_key", action.kind.value),
+    ]
+    if action.clue_code is not None:
+        details.append(("clue_code", action.clue_code))
+    if action.encounter_code is not None:
+        details.append(("encounter_code", action.encounter_code))
+    if action.outcome_code is not None:
+        details.append(("outcome_code", action.outcome_code))
+    if gold_delta:
+        details.append(("gold_delta", str(gold_delta)))
+    if action.resource_delta:
+        details.append(("resources_gathered", str(action.resource_delta)))
+    if action.gold_per_resource:
+        details.append(("resources_sold", str(intent.quantity)))
+    if action.restore_hp:
+        details.append(("hp_restored", str(updated.stats.hp - before_stats.hp)))
+    if action.restore_mp:
+        details.append(("mp_restored", str(updated.stats.mp - before_stats.mp)))
+    if encounter_damage:
+        details.append(("damage", str(min(before_stats.hp, encounter_damage))))
+        if not updated.alive:
+            details.append(("life_event", "story-end-permanent-death"))
+    return _succeeded(world, intent, updated, tuple(details))
 
 
 def _rejected(
@@ -60,6 +155,21 @@ def apply_intent(
         return _rejected(world, intent, "unknown_adventurer")
     if not adventurer.can_act:
         return _rejected(world, intent, "adventurer_dead")
+    if type(intent.quantity) is not int or intent.quantity <= 0:
+        return _rejected(world, intent, "invalid_quantity")
+    if intent.action is ActionKind.MOVE and intent.quantity != 1:
+        return _rejected(world, intent, "invalid_quantity")
+    if intent.action is not ActionKind.MOVE and intent.target_location_id is not None:
+        return _rejected(world, intent, "unexpected_target_location")
+
+    contextual_action = _contextual_action(adventurer, world, intent.action)
+    if contextual_action is not None:
+        if intent.quantity != 1:
+            return _rejected(world, intent, "invalid_quantity")
+        return _apply_contextual_action(world, intent, adventurer, contextual_action)
+    location = world.locations[adventurer.location_id]
+    if location.contextual_actions and intent.action is not ActionKind.MOVE:
+        return _rejected(world, intent, "action_not_available_at_location")
 
     if intent.action is ActionKind.MOVE:
         destination = intent.target_location_id

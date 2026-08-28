@@ -8,7 +8,7 @@ from random import Random
 from aincrad.domain import ActionIntent, ActionKind, DomainEvent, WorldState
 from aincrad.domain.rules import apply_intent
 
-from .runtime import apply_action_progression
+from .runtime import action_awards_xp, apply_action_progression
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +28,7 @@ class SimulationResult:
 @dataclass(frozen=True, slots=True)
 class SimulationScheduler:
     seed: int
+    legacy_all_actions_award_xp: bool = False
 
     def run_hour(
         self, initial_state: WorldState, intents: Iterable[ActionIntent]
@@ -86,8 +87,14 @@ class SimulationScheduler:
                     before_action,
                     world,
                     event,
-                    xp_award=random.randint(1, 25),
+                    xp_award=(
+                        random.randint(1, 25)
+                        if self.legacy_all_actions_award_xp
+                        or action_awards_xp(intent.action)
+                        else 0
+                    ),
                     hazard_damage=hazard_damage,
+                    legacy_all_actions_award_xp=self.legacy_all_actions_award_xp,
                 )
                 progressed.append(event)
             emitted = tuple(progressed)

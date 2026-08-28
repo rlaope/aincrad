@@ -36,6 +36,9 @@ aincrad = "aincrad.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"aincrad.content" = ["data/*.json"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]

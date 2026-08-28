@@ -29,6 +29,12 @@ class Activity(StrEnum):
     GATHERING = "gathering"
     TRADING = "trading"
     WAITING = "waiting"
+    OBSERVING = "observing"
+    SCOUTING = "scouting"
+    SEARCHING = "searching"
+    FIGHTING = "fighting"
+    CAMPING = "camping"
+    SERVICING = "servicing"
 
 
 class ActionKind(StrEnum):
@@ -37,6 +43,23 @@ class ActionKind(StrEnum):
     GATHER = "gather"
     TRADE = "trade"
     WAIT = "wait"
+    OBSERVE = "observe"
+    BUY_SUPPLIES = "buy_supplies"
+    SELL_SALVAGE = "sell_salvage"
+    LODGE = "lodge"
+    STORE_BELONGINGS = "store_belongings"
+    LIST_CONTRACTS = "list_contracts"
+    TURN_IN_CONTRACT = "turn_in_contract"
+    READ_NOTICES = "read_notices"
+    REQUEST_DIRECTIONS = "request_directions"
+    BUY_MEAL = "buy_meal"
+    HEAR_RUMOR = "hear_rumor"
+    HUNT = "hunt"
+    SCOUT = "scout"
+    CAMP = "camp"
+    SEARCH = "search"
+    FIGHT = "fight"
+    CHALLENGE = "challenge"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +79,34 @@ class Stats:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextualAction:
+    """Fixture-backed local action metadata with only state the domain can represent."""
+
+    id: str
+    kind: ActionKind
+    label_ko: str
+    description_ko: str
+    service: str | None = None
+    clue_code: str | None = None
+    encounter_code: str | None = None
+    outcome_code: str | None = None
+    requires_completed_contract: bool = False
+    gold_delta: int = 0
+    gold_per_resource: int = 0
+    resource_delta: int = 0
+    restore_hp: int = 0
+    restore_mp: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            raise ValueError("contextual action id cannot be empty")
+        if not self.label_ko.strip() or not self.description_ko.strip():
+            raise ValueError("contextual actions require Korean display metadata")
+        if self.restore_hp < 0 or self.restore_mp < 0:
+            raise ValueError("contextual restoration cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
 class Location:
     id: str
     name: str
@@ -66,6 +117,9 @@ class Location:
     boss_id: str | None = None
     transition_id: str | None = None
     next_world_floor: int | None = None
+    description: str = ""
+    services: tuple[str, ...] = ()
+    contextual_actions: tuple[ContextualAction, ...] = ()
 
     def __post_init__(self) -> None:
         if self.stage is not None and self.stage <= 0:
@@ -78,6 +132,10 @@ class Location:
             not self.is_boss_room or self.next_world_floor <= 0
         ):
             raise ValueError("world-floor transitions require a valid boss room")
+        if len({action.id for action in self.contextual_actions}) != len(self.contextual_actions):
+            raise ValueError("location contextual action ids must be unique")
+        if len({action.kind for action in self.contextual_actions}) != len(self.contextual_actions):
+            raise ValueError("location contextual action kinds must be unique")
 
 
 @dataclass(frozen=True, slots=True)

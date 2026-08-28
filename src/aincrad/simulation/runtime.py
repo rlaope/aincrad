@@ -17,6 +17,31 @@ _LEGACY_COMPANION_ID = "rhea-companion"
 _RECRUIT_EVENT = "companion-recruit-rhea"
 _DEPART_EVENT = "companion-depart-rhea"
 _DEATH_EVENT = "story-end-permanent-death"
+_XP_EARNING_ACTION_VALUES = frozenset(
+    {
+        "gather",
+        "hunt",
+        "scout",
+        "fight",
+        "search",
+        "dungeon_fight",
+        "dungeon_search",
+        "boss_challenge",
+        "challenge_boss",
+        "challenge",
+        "quest_complete",
+        "quest_completion",
+        "complete_quest",
+        "quest_turn_in",
+        "turn_in_quest",
+        "turn_in_contract",
+    }
+)
+
+
+def action_awards_xp(action: ActionKind | str) -> bool:
+    """Return whether a stable action value represents a meaningful achievement."""
+    return str(getattr(action, "value", action)) in _XP_EARNING_ACTION_VALUES
 
 
 def _set_adventurer(world: WorldState, adventurer: Adventurer) -> WorldState:
@@ -30,18 +55,19 @@ def apply_action_progression(
     *,
     xp_award: int,
     hazard_damage: int,
+    legacy_all_actions_award_xp: bool = False,
 ) -> tuple[WorldState, DomainEvent]:
     """Apply deterministic live progression and preserve every input in event details."""
     if not isinstance(event, ActionSucceeded):
         return after, event
-    if not 1 <= xp_award <= 25:
-        raise ValueError("runtime XP award must be between 1 and 25")
+    if not 0 <= xp_award <= 25:
+        raise ValueError("runtime XP award must be between 0 and 25")
     if hazard_damage < 0:
         raise ValueError("runtime hazard damage cannot be negative")
 
     previous = before.adventurers[event.adventurer_id]
     adventurer = after.adventurers[event.adventurer_id]
-    details = list(event.details)
+    details = [(key, value) for key, value in event.details if key != "xp_awarded"]
 
     if event.action is ActionKind.REST:
         details.extend(
@@ -72,10 +98,15 @@ def apply_action_progression(
             details.append(("life_event", _DEATH_EVENT))
 
     if adventurer.alive:
-        adventurer = award_exp(adventurer, xp_award)
-        details.append(("xp_awarded", str(xp_award)))
+        awarded_xp = (
+            xp_award
+            if legacy_all_actions_award_xp or action_awards_xp(event.action)
+            else 0
+        )
+        adventurer = award_exp(adventurer, awarded_xp)
     else:
-        details.append(("xp_awarded", "0"))
+        awarded_xp = 0
+    details.append(("xp_awarded", str(awarded_xp)))
     details.extend(
         (
             ("character_class", adventurer.character_class.value),

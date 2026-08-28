@@ -1,0 +1,768 @@
+{
+  "schema_version": 1,
+  "world_id": "glassfrontier",
+  "title": "The Glass Frontier",
+  "towns": [
+    {
+      "id": "emberfall",
+      "name": "Emberfall",
+      "kind": "town",
+      "description": "A lantern-lit settlement built around a warm shard spring.",
+      "connections": [
+        "emberfall-shop",
+        "emberfall-inn",
+        "emberfall-quest-hall",
+        "emberfall-plaza",
+        "emberfall-tavern",
+        "mossreach"
+      ],
+      "facilities": [
+        {
+          "id": "emberfall-shop",
+          "kind": "shop",
+          "name": "Cinderstock Exchange",
+          "description": "A brass-shuttered supply shop for trail gear and shard-safe provisions.",
+          "services": [
+            "buy_supplies",
+            "sell_salvage"
+          ],
+          "connections": [
+            "emberfall"
+          ],
+          "actions": [
+            {
+              "id": "emberfall-shop-buy-supplies",
+              "kind": "buy_supplies",
+              "outcome_code": "supply-purchase-recorded",
+              "service": "buy_supplies",
+              "gold_delta": -3,
+              "label_ko": "\ubcf4\uae09\ud488 \uad6c\uc785",
+              "description_ko": "\ubcf4\uc720 \uace8\ub4dc\ub85c \uae30\ub85d \uac00\ub2a5\ud55c \ubcf4\uae09 \uac70\ub798\ub97c \ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "emberfall-shop-sell-salvage",
+              "kind": "sell_salvage",
+              "outcome_code": "salvage-sale-recorded",
+              "service": "sell_salvage",
+              "gold_per_resource": 2,
+              "label_ko": "\uc794\ud574 \ud310\ub9e4",
+              "description_ko": "\ud68c\uc218\ud55c \uc790\uc6d0\uc744 \ud310\ub9e4\ud574 \uace8\ub4dc\ub97c \uc5bb\uc2b5\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "emberfall-inn",
+          "kind": "inn",
+          "name": "The Quiet Wick",
+          "description": "A spring-warmed inn where travelers can recover before entering the wilds.",
+          "services": [
+            "rest",
+            "store_belongings"
+          ],
+          "connections": [
+            "emberfall"
+          ],
+          "actions": [
+            {
+              "id": "emberfall-inn-lodge",
+              "kind": "lodge",
+              "outcome_code": "lodging-recovery-recorded",
+              "service": "rest",
+              "gold_delta": -2,
+              "restore_hp": 99,
+              "restore_mp": 99,
+              "label_ko": "\uc219\ubc15",
+              "description_ko": "\uc219\ubc15\ube44\ub97c \ub0b4\uace0 HP\uc640 MP\ub97c \ud68c\ubcf5\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "emberfall-inn-store-belongings",
+              "kind": "store_belongings",
+              "outcome_code": "storage-request-recorded",
+              "service": "store_belongings",
+              "label_ko": "\ubb3c\ud488 \ubcf4\uad00 \ubb38\uc758",
+              "description_ko": "\ubcf4\uad00 \uc694\uccad\uc744 \uae30\ub85d\ud569\ub2c8\ub2e4. \uc778\ubca4\ud1a0\ub9ac\ub294 \ubcc0\uacbd\ub418\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "emberfall-quest-hall",
+          "kind": "quest_hall",
+          "name": "Wayfinder Assembly",
+          "description": "A public expedition hall that records hazards and matches crews to contracts.",
+          "services": [
+            "list_contracts",
+            "turn_in_contract"
+          ],
+          "connections": [
+            "emberfall"
+          ],
+          "actions": [
+            {
+              "id": "emberfall-quest-hall-list-contracts",
+              "kind": "list_contracts",
+              "outcome_code": "contract-list-recorded",
+              "service": "list_contracts",
+              "clue_code": "mossreach-survey",
+              "label_ko": "\uc758\ub8b0 \ubaa9\ub85d \ud655\uc778",
+              "description_ko": "\uacf5\uac1c\ub41c \uc758\ub8b0\uc640 \uc704\ud5d8 \uc815\ubcf4\ub97c \ud655\uc778\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "emberfall-quest-hall-turn-in-contract",
+              "kind": "turn_in_contract",
+              "outcome_code": "contract-turn-in-unavailable",
+              "service": "turn_in_contract",
+              "requires_completed_contract": true,
+              "label_ko": "\uc758\ub8b0 \uc644\ub8cc \ubcf4\uace0",
+              "description_ko": "\uc644\ub8cc \uc758\ub8b0 \uc0c1\ud0dc\uac00 \uc788\uc744 \ub54c\ub9cc \ubcf4\uace0\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "emberfall-plaza",
+          "kind": "plaza",
+          "name": "Prismwake Square",
+          "description": "The central square for notices, orientation, and safe-route announcements.",
+          "services": [
+            "read_notices",
+            "request_directions"
+          ],
+          "connections": [
+            "emberfall"
+          ],
+          "actions": [
+            {
+              "id": "emberfall-plaza-read-notices",
+              "kind": "read_notices",
+              "outcome_code": "notice-board-read",
+              "service": "read_notices",
+              "clue_code": "vault-open",
+              "label_ko": "\uacf5\uc9c0 \uc77d\uae30",
+              "description_ko": "\uad11\uc7a5\uc758 \uacf5\uc9c0\uc640 \uc548\uc804 \uc18c\uc2dd\uc744 \uc77d\uc2b5\ub2c8\ub2e4."
+            },
+            {
+              "id": "emberfall-plaza-request-directions",
+              "kind": "request_directions",
+              "outcome_code": "directions-recorded",
+              "service": "request_directions",
+              "clue_code": "route-mossreach",
+              "label_ko": "\uae38 \uc548\ub0b4 \uc694\uccad",
+              "description_ko": "\ud604\uc7ac \uc548\uc804 \uacbd\ub85c\uc5d0 \uad00\ud55c \uc548\ub0b4\ub97c \ubc1b\uc2b5\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "emberfall-tavern",
+          "kind": "tavern",
+          "name": "The Copper Comet",
+          "description": "A bright cellar tavern where scouts exchange verified rumors over ember tea.",
+          "services": [
+            "buy_meal",
+            "hear_rumor"
+          ],
+          "connections": [
+            "emberfall"
+          ],
+          "actions": [
+            {
+              "id": "emberfall-tavern-buy-meal",
+              "kind": "buy_meal",
+              "outcome_code": "meal-recovery-recorded",
+              "service": "buy_meal",
+              "gold_delta": -2,
+              "restore_hp": 2,
+              "label_ko": "\uc2dd\uc0ac \uad6c\ub9e4",
+              "description_ko": "\uc2dd\uc0ac\ube44\ub97c \ub0b4\uace0 \uc18c\ub7c9\uc758 HP\ub97c \ud68c\ubcf5\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "emberfall-tavern-hear-rumor",
+              "kind": "hear_rumor",
+              "outcome_code": "verified-rumor-recorded",
+              "service": "hear_rumor",
+              "clue_code": "inverted-belfry-bells",
+              "label_ko": "\uac80\uc99d\ub41c \uc18c\ubb38 \ub4e3\uae30",
+              "description_ko": "\uc815\ucc30\ub300\uac00 \uac80\uc99d\ud55c \uc18c\ubb38\uc744 \ub4e3\uc2b5\ub2c8\ub2e4."
+            }
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "id": "emberfall-observe-warm-spring",
+          "kind": "observe",
+          "outcome_code": "spring-observation-recorded",
+          "clue_code": "warm-shard-spring",
+          "label_ko": "\uc628\ucc9c \uad00\ucc30",
+          "description_ko": "\ub530\ub73b\ud55c \uc0e4\ub4dc \uc628\ucc9c\uc758 \ubcc0\ud654\ub97c \uad00\ucc30\ud569\ub2c8\ub2e4."
+        }
+      ]
+    }
+  ],
+  "hunting_grounds": [
+    {
+      "id": "mossreach",
+      "name": "Mossreach Wilds",
+      "kind": "hunting_ground",
+      "description": "Rain-bright terraces where glasshorn hares and reed wolves roam.",
+      "connections": [
+        "emberfall",
+        "vault-1"
+      ],
+      "actions": [
+        {
+          "id": "mossreach-hunt",
+          "kind": "hunt",
+          "outcome_code": "hunt-resources-recorded",
+          "encounter_code": "glasshorn-hare",
+          "resource_delta": 1,
+          "label_ko": "\uc0ac\ub0e5",
+          "description_ko": "\uc57c\uc0dd \ub3d9\ubb3c\uc744 \uc0ac\ub0e5\ud574 \uc790\uc6d0\uc744 \ud655\ubcf4\ud569\ub2c8\ub2e4."
+        },
+        {
+          "id": "mossreach-gather",
+          "kind": "gather",
+          "outcome_code": "gathering-recorded",
+          "clue_code": "rainbright-reeds",
+          "resource_delta": 1,
+          "label_ko": "\ucc44\uc9d1",
+          "description_ko": "\uc9c0\ud615\uc5d0\uc11c \uc4f8 \uc218 \uc788\ub294 \uc790\uc6d0\uc744 \ucc44\uc9d1\ud569\ub2c8\ub2e4."
+        },
+        {
+          "id": "mossreach-scout",
+          "kind": "scout",
+          "outcome_code": "wilds-route-scouted",
+          "clue_code": "vault-approach",
+          "label_ko": "\uc815\ucc30",
+          "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+        },
+        {
+          "id": "mossreach-camp",
+          "kind": "camp",
+          "outcome_code": "camp-recovery-recorded",
+          "restore_hp": 2,
+          "restore_mp": 1,
+          "label_ko": "\uc57c\uc601",
+          "description_ko": "\uc57c\uc601\ud558\uba70 \uc18c\ub7c9\uc758 HP\uc640 MP\ub97c \ud68c\ubcf5\ud569\ub2c8\ub2e4."
+        }
+      ]
+    }
+  ],
+  "dungeons": [
+    {
+      "id": "starless-vault",
+      "name": "The Starless Vault",
+      "floors": [
+        {
+          "id": "vault-1",
+          "depth": 1,
+          "kind": "dungeon_floor",
+          "name": "Echo Gallery",
+          "description": "Resonant halls patrolled by clay sentries.",
+          "connections": [
+            "mossreach",
+            "vault-2"
+          ],
+          "actions": [
+            {
+              "id": "vault-1-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-1-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-1-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-1-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-1-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-1-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-2",
+          "depth": 2,
+          "kind": "dungeon_floor",
+          "name": "Flooded Archive",
+          "description": "Half-submerged records watched by ink eels.",
+          "connections": [
+            "vault-1",
+            "vault-3"
+          ],
+          "actions": [
+            {
+              "id": "vault-2-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-2-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-2-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-2-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-2-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-2-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-3",
+          "depth": 3,
+          "kind": "dungeon_floor",
+          "name": "Nightglass Causeway",
+          "description": "A narrow bridge crossed by drifting mirror moths.",
+          "connections": [
+            "vault-2",
+            "vault-4"
+          ],
+          "actions": [
+            {
+              "id": "vault-3-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-3-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-3-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-3-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-3-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-3-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-4",
+          "depth": 4,
+          "kind": "dungeon_floor",
+          "name": "Hushed Reservoir",
+          "description": "Still cisterns conceal pressure locks and pale shellbacks.",
+          "connections": [
+            "vault-3",
+            "vault-5"
+          ],
+          "actions": [
+            {
+              "id": "vault-4-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-4-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-4-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-4-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-4-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-4-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-5",
+          "depth": 5,
+          "kind": "dungeon_floor",
+          "name": "Sable Orrery",
+          "description": "Unlit brass planets rotate around a cold artificial moon.",
+          "connections": [
+            "vault-4",
+            "vault-6"
+          ],
+          "actions": [
+            {
+              "id": "vault-5-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-5-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-5-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-5-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-5-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-5-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-6",
+          "depth": 6,
+          "kind": "dungeon_floor",
+          "name": "Gloam Workshop",
+          "description": "Abandoned lens-cutters continue their dangerous programmed motions.",
+          "connections": [
+            "vault-5",
+            "vault-7"
+          ],
+          "actions": [
+            {
+              "id": "vault-6-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-6-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-6-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-6-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-6-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-6-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-7",
+          "depth": 7,
+          "kind": "dungeon_floor",
+          "name": "Ashen Conservatory",
+          "description": "Black-leaf vines thrive beneath lamps that shed no warmth.",
+          "connections": [
+            "vault-6",
+            "vault-8"
+          ],
+          "actions": [
+            {
+              "id": "vault-7-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-7-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-7-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-7-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-7-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-7-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-8",
+          "depth": 8,
+          "kind": "dungeon_floor",
+          "name": "Inverted Belfry",
+          "description": "A descending bell tower rings when intruders step on false stairs.",
+          "connections": [
+            "vault-7",
+            "vault-9"
+          ],
+          "actions": [
+            {
+              "id": "vault-8-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-8-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-8-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-8-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-8-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-8-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-9",
+          "depth": 9,
+          "kind": "dungeon_floor",
+          "name": "Crownless Antechamber",
+          "description": "Nine sealed doors open only when their reflected symbols align.",
+          "connections": [
+            "vault-8",
+            "vault-10"
+          ],
+          "actions": [
+            {
+              "id": "vault-9-scout",
+              "kind": "scout",
+              "outcome_code": "vault-floor-scouted",
+              "clue_code": "vault-9-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-9-search",
+              "kind": "search",
+              "outcome_code": "vault-floor-search-recorded",
+              "clue_code": "vault-9-cache",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-9-fight",
+              "kind": "fight",
+              "outcome_code": "vault-encounter-recorded",
+              "encounter_code": "vault-9-guardian",
+              "label_ko": "\uc804\ud22c",
+              "description_ko": "\ud604\uc7ac \uad6c\uc5ed\uc758 \uc801\ub300\uc801 \uc870\uc6b0\uc5d0 \ub300\uc751\ud569\ub2c8\ub2e4."
+            }
+          ]
+        },
+        {
+          "id": "vault-10",
+          "depth": 10,
+          "kind": "boss_room",
+          "name": "Chamber of the Null Cartographer",
+          "description": "A round map chamber defended by a construct that erases every path it measures.",
+          "connections": [
+            "vault-9"
+          ],
+          "completion": {
+            "boss_id": "null-cartographer",
+            "rewards": [
+              "star-compass-core",
+              "emberfall-vault-seal"
+            ],
+            "transition_id": "aurora-lift-floor-2",
+            "next_world_floor": 2,
+            "unlock_description": "The defeated cartographer restores the Aurora Lift, opening an original route to world floor 2."
+          },
+          "actions": [
+            {
+              "id": "vault-10-scout",
+              "kind": "scout",
+              "outcome_code": "boss-room-scouted",
+              "clue_code": "null-cartographer-route",
+              "label_ko": "\uc815\ucc30",
+              "description_ko": "\uc8fc\ubcc0 \uacbd\ub85c\uc640 \uc704\ud5d8 \ub2e8\uc11c\ub97c \uc815\ucc30\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-10-search",
+              "kind": "search",
+              "outcome_code": "boss-room-search-recorded",
+              "clue_code": "aurora-lift-seal",
+              "label_ko": "\uc218\uc0c9",
+              "description_ko": "\ubc29 \uc548\uc758 \ub2e8\uc11c\uc640 \ud754\uc801\uc744 \uc218\uc0c9\ud569\ub2c8\ub2e4."
+            },
+            {
+              "id": "vault-10-challenge",
+              "kind": "challenge",
+              "outcome_code": "boss-challenge-recorded",
+              "encounter_code": "null-cartographer",
+              "label_ko": "\ubcf4\uc2a4 \ub3c4\uc804",
+              "description_ko": "\ub110 \uce74\ud1a0\uadf8\ub798\ud37c\uc5d0\uac8c \uc815\uc2dd\uc73c\ub85c \ub3c4\uc804\ud569\ub2c8\ub2e4."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "adventurers": [
+    {
+      "id": "rhea-vale",
+      "name": "Rhea Vale",
+      "role": "vanguard",
+      "location_id": "emberfall",
+      "controller": "agent",
+      "stats": {
+        "hp": 24,
+        "max_hp": 24,
+        "mp": 6,
+        "max_mp": 6
+      }
+    },
+    {
+      "id": "tovin-reed",
+      "name": "Tovin Reed",
+      "role": "pathfinder",
+      "location_id": "mossreach",
+      "controller": "agent",
+      "stats": {
+        "hp": 18,
+        "max_hp": 18,
+        "mp": 10,
+        "max_mp": 10
+      }
+    },
+    {
+      "id": "sable-quill",
+      "name": "Sable Quill",
+      "role": "arcanist",
+      "location_id": "emberfall",
+      "controller": "agent",
+      "stats": {
+        "hp": 14,
+        "max_hp": 14,
+        "mp": 18,
+        "max_mp": 18
+      }
+    }
+  ],
+  "npcs": [
+    {
+      "id": "npc-orrin",
+      "name": "Orrin Flint",
+      "location_id": "emberfall-shop",
+      "controller": "rules",
+      "service": "shop",
+      "rules": {
+        "buy:field-ration": {
+          "gold_delta": -3,
+          "items": [
+            "field-ration"
+          ]
+        },
+        "sell:glasshorn": {
+          "gold_delta": 4
+        }
+      }
+    },
+    {
+      "id": "npc-brann",
+      "name": "Brann Lume",
+      "location_id": "emberfall-inn",
+      "controller": "rules",
+      "service": "inn",
+      "rules": {
+        "rest": {
+          "gold_delta": -2,
+          "restore_hp": "full",
+          "restore_mp": "full"
+        },
+        "store": {
+          "gold_delta": -1
+        }
+      }
+    },
+    {
+      "id": "npc-vela",
+      "name": "Vela March",
+      "location_id": "emberfall-quest-hall",
+      "controller": "rules",
+      "service": "quest_hall",
+      "rules": {
+        "list": {
+          "contracts": [
+            "mossreach-survey",
+            "vault-signal"
+          ]
+        },
+        "turn_in:vault-signal": {
+          "gold_delta": 12
+        }
+      }
+    },
+    {
+      "id": "npc-pell",
+      "name": "Pell Azure",
+      "location_id": "emberfall-plaza",
+      "controller": "rules",
+      "service": "plaza",
+      "rules": {
+        "notices": {
+          "notices": [
+            "vault-open",
+            "north-path-clear"
+          ]
+        },
+        "directions": {
+          "route": "mossreach"
+        }
+      }
+    },
+    {
+      "id": "npc-sena",
+      "name": "Sena Coal",
+      "location_id": "emberfall-tavern",
+      "controller": "rules",
+      "service": "tavern",
+      "rules": {
+        "buy:ember-stew": {
+          "gold_delta": -2,
+          "items": [
+            "ember-stew"
+          ]
+        },
+        "rumor": {
+          "clue": "inverted-belfry-bells"
+        }
+      }
+    }
+  ]
+}

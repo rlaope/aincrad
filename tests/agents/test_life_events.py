@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -13,10 +12,7 @@ from aincrad.content.events import (
     LifeEventType,
     validate_life_event_catalog,
 )
-from aincrad.content.fixtures import load_world_fixture
-
-ROOT = Path(__file__).parents[2]
-FIXTURE = ROOT / "fixtures" / "glassfrontier_world.json"
+from aincrad.content.fixtures import load_packaged_world_fixture
 
 
 def test_catalog_contains_one_typed_template_for_each_life_event() -> None:
@@ -243,7 +239,7 @@ def test_template_deeply_copies_and_freezes_nested_trigger_and_effect_values() -
 
 
 def test_catalog_boss_transition_references_match_validated_world_fixture() -> None:
-    world = load_world_fixture(FIXTURE)
+    world = load_packaged_world_fixture()
     boss_clear = next(
         event for event in LIFE_EVENT_CATALOG if event.event_type is LifeEventType.BOSS_ROOM_CLEAR
     )
@@ -282,7 +278,7 @@ def test_catalog_boss_transition_references_match_validated_world_fixture() -> N
 def test_validator_rejects_catalog_boss_metadata_that_disagrees_with_world(
     event_index: int, triggers: dict[str, object], effects: dict[str, object]
 ) -> None:
-    world = load_world_fixture(FIXTURE)
+    world = load_packaged_world_fixture()
     invalid = replace(LIFE_EVENT_CATALOG[event_index], triggers=triggers, effects=effects)
     catalog = tuple(
         invalid if index == event_index else event

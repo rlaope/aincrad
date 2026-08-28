@@ -81,6 +81,36 @@ def test_committed_v2_log_remains_hash_verified_replayable() -> None:
     assert replayed.summary.event_count == 2
 
 
+def test_movement_awards_zero_xp_and_round_trips_through_hash_replay(
+    tmp_path: Path,
+) -> None:
+    event_log = tmp_path / "events.jsonl"
+
+    _default_run(
+        seed=7,
+        hours=1,
+        headless=True,
+        output=event_log,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+        hero_name="별",
+        stdin=StringIO(),
+        stdout=StringIO(),
+    )
+
+    records = EventLog(event_log).verify()
+    assert records[0].event["rules_version"] == 2
+    tick = records[1].event
+    hero_event = next(
+        event
+        for event in tick["action_events"]
+        if event["adventurer_id"] == "hero"
+    )
+    assert hero_event["action"] == ActionKind.MOVE.value
+    assert dict(hero_event["details"])["xp_awarded"] == "0"
+    assert _default_replay(event_log=event_log, verify_hash=True).summary.status == "해시 검증 완료"
+
+
 def test_identity_profile_round_trips_through_v3_log_and_history(tmp_path: Path) -> None:
     event_log = tmp_path / "events.jsonl"
     history_root = tmp_path / "history"
@@ -536,7 +566,7 @@ def test_two_hours_collect_one_action_from_each_adventurer() -> None:
 
 
 def test_interactive_new_run_selects_one_hero_then_runs_one_hour() -> None:
-    stdin = StringIO("1\n별\n9\n")
+    stdin = StringIO("1\n별\n8\n")
     stdout = StringIO()
 
     exit_code = main(

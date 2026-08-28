@@ -2,11 +2,31 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast
 
+from .actions import EXPECTED_FACILITY_SERVICES, expected_action_kinds
+
 FacilityKind = Literal["shop", "inn", "quest_hall", "plaza", "tavern"]
 FloorKind = Literal["dungeon_floor", "boss_room"]
+
+
+class ActionFixture(TypedDict):
+    id: str
+    kind: str
+    label_ko: str
+    description_ko: str
+    outcome_code: str
+    service: NotRequired[str]
+    clue_code: NotRequired[str]
+    encounter_code: NotRequired[str]
+    requires_completed_contract: NotRequired[bool]
+    gold_delta: NotRequired[int]
+    gold_per_resource: NotRequired[int]
+    resource_delta: NotRequired[int]
+    restore_hp: NotRequired[int]
+    restore_mp: NotRequired[int]
 
 
 class FacilityFixture(TypedDict):
@@ -15,6 +35,7 @@ class FacilityFixture(TypedDict):
     name: str
     description: str
     services: list[str]
+    actions: list[ActionFixture]
     connections: list[str]
 
 
@@ -23,6 +44,7 @@ class TownFixture(TypedDict):
     name: str
     kind: Literal["town"]
     description: str
+    actions: list[ActionFixture]
     connections: list[str]
     facilities: list[FacilityFixture]
 
@@ -41,6 +63,7 @@ class FloorFixture(TypedDict):
     kind: FloorKind
     name: str
     description: str
+    actions: list[ActionFixture]
     connections: list[str]
     completion: NotRequired[CompletionFixture]
 
@@ -51,12 +74,21 @@ class DungeonFixture(TypedDict):
     floors: list[FloorFixture]
 
 
+class HuntingGroundFixture(TypedDict):
+    id: str
+    name: str
+    kind: Literal["hunting_ground"]
+    description: str
+    actions: list[ActionFixture]
+    connections: list[str]
+
+
 class WorldFixture(TypedDict):
     schema_version: int
     world_id: str
     title: str
     towns: list[TownFixture]
-    hunting_grounds: list[dict[str, object]]
+    hunting_grounds: list[HuntingGroundFixture]
     dungeons: list[DungeonFixture]
     adventurers: list[dict[str, object]]
     npcs: list[dict[str, object]]
@@ -103,6 +135,56 @@ def _connections(place: Mapping[str, object], field: str) -> list[str]:
     return [_text(item, f"{field}.connections entry") for item in value]
 
 
+def _integer(value: object, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise FixtureSchemaError(f"{field} must be an integer")
+    return value
+
+
+def _validate_actions(place: Mapping[str, object], field: str) -> None:
+    location_id = _text(place.get("id"), f"{field}.id")
+    try:
+        expected_kinds = expected_action_kinds(location_id)
+    except KeyError as error:
+        raise FixtureSchemaError(
+            f"location {location_id} has no canonical action coverage"
+        ) from error
+    actions = _objects(place.get("actions"), f"location {location_id}.actions")
+    actual_kinds = [
+        _text(action.get("kind"), f"location {location_id}.actions.kind") for action in actions
+    ]
+    if tuple(actual_kinds) != expected_kinds:
+        raise FixtureSchemaError(f"location {location_id} actions must match canonical coverage")
+    action_ids = [
+        _text(action.get("id"), f"location {location_id}.actions.id") for action in actions
+    ]
+    if len(action_ids) != len(set(action_ids)):
+        raise FixtureSchemaError(f"location {location_id} action ids must be unique")
+    for action in actions:
+        action_id = _text(action.get("id"), f"location {location_id}.actions.id")
+        _text(action.get("label_ko"), f"action {action_id}.label_ko")
+        _text(action.get("description_ko"), f"action {action_id}.description_ko")
+        _text(action.get("outcome_code"), f"action {action_id}.outcome_code")
+        for code in ("clue_code", "encounter_code", "service"):
+            if code in action:
+                _text(action[code], f"action {action_id}.{code}")
+        if "requires_completed_contract" in action and not isinstance(
+            action["requires_completed_contract"], bool
+        ):
+            raise FixtureSchemaError(
+                f"action {action_id}.requires_completed_contract must be boolean"
+            )
+        for number in (
+            "gold_delta",
+            "gold_per_resource",
+            "resource_delta",
+            "restore_hp",
+            "restore_mp",
+        ):
+            if number in action:
+                _integer(action[number], f"action {action_id}.{number}")
+
+
 def _validate_facilities(town: Mapping[str, object]) -> list[Mapping[str, object]]:
     facilities = _objects(town.get("facilities"), "town.facilities")
     expected_kinds: set[str] = {"shop", "inn", "quest_hall", "plaza", "tavern"}
@@ -113,7 +195,18 @@ def _validate_facilities(town: Mapping[str, object]) -> list[Mapping[str, object
     for facility in facilities:
         facility_id = _text(facility.get("id"), "facility.id")
         _text(facility.get("description"), f"facility {facility_id}.description")
-        _texts(facility.get("services"), f"facility {facility_id}.services")
+        services = tuple(_texts(facility.get("services"), f"facility {facility_id}.services"))
+        if services != EXPECTED_FACILITY_SERVICES[facility_id]:
+            raise FixtureSchemaError(
+                f"facility {facility_id} services must match canonical coverage"
+            )
+        _validate_actions(facility, "facility")
+        action_services = tuple(
+            _text(action.get("service"), f"facility {facility_id}.actions.service")
+            for action in _objects(facility.get("actions"), f"facility {facility_id}.actions")
+        )
+        if action_services != services:
+            raise FixtureSchemaError(f"facility {facility_id} actions must cover its services")
         _connections(facility, f"facility {facility_id}")
     return facilities
 
@@ -126,6 +219,7 @@ def _validate_dungeon(dungeon: Mapping[str, object]) -> list[Mapping[str, object
     for floor in floors:
         floor_id = _text(floor.get("id"), "dungeon floor.id")
         _text(floor.get("description"), f"dungeon floor {floor_id}.description")
+        _validate_actions(floor, "dungeon floor")
         _connections(floor, f"dungeon floor {floor_id}")
     if any(floor.get("kind") != "dungeon_floor" for floor in floors[:-1]):
         raise FixtureSchemaError("dungeon depths 1 through 9 must be dungeon_floor")
@@ -188,6 +282,11 @@ def validate_world_fixture(world: object) -> WorldFixture:
 
     facilities = _validate_facilities(towns[0])
     floors = _validate_dungeon(dungeons[0])
+    _validate_actions(towns[0], "town")
+    for ground in grounds:
+        ground_id = _text(ground.get("id"), "hunting ground.id")
+        _text(ground.get("description"), f"hunting ground {ground_id}.description")
+        _validate_actions(ground, "hunting ground")
     places = [*towns, *facilities, *grounds, *floors]
     location_ids = _unique_ids(places, "location")
     known_locations = set(location_ids)
@@ -239,7 +338,15 @@ def load_world_fixture(path: str | Path) -> LoadedWorldFixture:
     result["location_ids"] = tuple(
         [item["id"] for item in world["towns"]]
         + [facility["id"] for item in world["towns"] for facility in item["facilities"]]
-        + [cast(str, item["id"]) for item in world["hunting_grounds"]]
+        + [item["id"] for item in world["hunting_grounds"]]
         + [floor["id"] for dungeon in world["dungeons"] for floor in dungeon["floors"]]
     )
     return result
+
+
+def load_packaged_world_fixture() -> LoadedWorldFixture:
+    """Load the canonical world JSON from installed package resources."""
+
+    resource = files("aincrad.content").joinpath("data", "glassfrontier_world.json")
+    with as_file(resource) as path:
+        return load_world_fixture(path)

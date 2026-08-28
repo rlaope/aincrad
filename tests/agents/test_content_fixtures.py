@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from pathlib import Path
+from importlib.resources import files
 from typing import Any, cast
 
 import pytest
@@ -11,16 +11,15 @@ from aincrad.content import (
     FixtureSchemaError,
     RuleBasedNPCService,
     ServiceRequest,
-    load_world_fixture,
+    load_packaged_world_fixture,
     validate_world_fixture,
 )
 
-ROOT = Path(__file__).parents[2]
-FIXTURE = ROOT / "fixtures" / "glassfrontier_world.json"
+FIXTURE = files("aincrad.content").joinpath("data", "glassfrontier_world.json")
 
 
 def test_original_world_fixture_has_three_candidate_adventurers() -> None:
-    world = load_world_fixture(FIXTURE)
+    world = load_packaged_world_fixture()
 
     assert world["schema_version"] == 1
     assert len(world["towns"]) == 1
@@ -48,7 +47,7 @@ def test_fixture_validator_enforces_canonical_world_identity(
 
 
 def test_emberfall_has_five_explicit_service_facilities() -> None:
-    world = load_world_fixture(FIXTURE)
+    world = load_packaged_world_fixture()
     emberfall = world["towns"][0]
 
     assert [facility["id"] for facility in emberfall["facilities"]] == [
@@ -70,7 +69,7 @@ def test_emberfall_has_five_explicit_service_facilities() -> None:
 
 
 def test_starless_vault_is_connected_through_boss_and_world_transition() -> None:
-    world = load_world_fixture(FIXTURE)
+    world = load_packaged_world_fixture()
     floors = world["dungeons"][0]["floors"]
 
     assert [floor["depth"] for floor in floors] == list(range(1, 11))
@@ -84,7 +83,7 @@ def test_starless_vault_is_connected_through_boss_and_world_transition() -> None
 
 
 def test_general_npcs_are_declared_as_rule_based_facility_services() -> None:
-    world = load_world_fixture(FIXTURE)
+    world = load_packaged_world_fixture()
 
     assert world["npcs"]
     assert {npc["controller"] for npc in world["npcs"]} == {"rules"}
@@ -129,6 +128,15 @@ def test_fixture_validator_requires_one_npc_for_each_facility() -> None:
     world["npcs"][-1]["service"] = "shop"
 
     with pytest.raises(FixtureSchemaError, match="one rule-based NPC"):
+        validate_world_fixture(world)
+
+
+@pytest.mark.parametrize("field", ("label_ko", "description_ko"))
+def test_fixture_validator_requires_localized_action_display_metadata(field: str) -> None:
+    world = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    world["towns"][0]["actions"][0][field] = ""
+
+    with pytest.raises(FixtureSchemaError, match=field):
         validate_world_fixture(world)
 
 

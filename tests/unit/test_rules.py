@@ -17,6 +17,7 @@ from aincrad.domain import (
     WorldState,
 )
 from aincrad.domain.rules import apply_intent
+from aincrad.simulation.scenario import create_initial_world
 
 
 def test_domain_event_is_an_explicit_dataclass_base_type() -> None:
@@ -184,3 +185,147 @@ def test_wealth_rejects_negative_values() -> None:
     adventurer = make_world().adventurers["mira"]
     with pytest.raises(ValueError):
         replace(adventurer, gold=-1)
+
+
+def test_contextual_actions_emit_grounded_codes_and_only_mutate_supported_state() -> None:
+    world = create_initial_world()
+
+    observed, observed_events = apply_intent(
+        world, ActionIntent("rhea-vale", ActionKind.OBSERVE)
+    )
+    observed_event = cast(ActionSucceeded, observed_events[0])
+    assert observed.adventurers["rhea-vale"].activity is Activity.OBSERVING
+    assert dict(observed_event.details) == {
+        "location_id": "emberfall",
+        "action_id": "emberfall-observe-warm-spring",
+        "action_key": "observe",
+        "clue_code": "warm-shard-spring",
+        "outcome_code": "spring-observation-recorded",
+    }
+
+    shopper = replace(world.adventurers["rhea-vale"], location_id="emberfall-shop")
+    at_shop = replace(world, adventurers={**world.adventurers, shopper.id: shopper})
+    purchased, purchase_events = apply_intent(
+        at_shop, ActionIntent("rhea-vale", ActionKind.BUY_SUPPLIES)
+    )
+    purchase_event = cast(ActionSucceeded, purchase_events[0])
+    assert purchased.adventurers["rhea-vale"].gold == shopper.gold - 3
+    assert purchased.adventurers["rhea-vale"].resources == shopper.resources
+    assert dict(purchase_event.details)["outcome_code"] == "supply-purchase-recorded"
+    assert "items" not in dict(purchase_event.details)
+
+
+def test_unrepresentable_contract_turn_in_is_rejected_without_faking_quest_state() -> None:
+    world = create_initial_world()
+    quest_member = replace(world.adventurers["rhea-vale"], location_id="emberfall-quest-hall")
+    world = replace(world, adventurers={**world.adventurers, quest_member.id: quest_member})
+
+    next_world, events = apply_intent(
+        world, ActionIntent("rhea-vale", ActionKind.TURN_IN_CONTRACT)
+    )
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].reason == "completed_contract_not_representable"
+
+
+@pytest.mark.parametrize(
+    ("location_id", "action"),
+    (
+        ("vault-1", ActionKind.REST),
+        ("emberfall-inn", ActionKind.TRADE),
+        ("emberfall-shop", ActionKind.WAIT),
+        ("mossreach", ActionKind.REST),
+    ),
+)
+def test_canonical_locations_reject_local_actions_outside_their_catalog(
+    location_id: str,
+    action: ActionKind,
+) -> None:
+    world = create_initial_world()
+    actor = replace(
+        world.adventurers["rhea-vale"],
+        location_id=location_id,
+        resources=1,
+    )
+    world = replace(world, adventurers={**world.adventurers, actor.id: actor})
+
+    next_world, events = apply_intent(world, ActionIntent(actor.id, action))
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].reason == "action_not_available_at_location"
+
+
+def test_contextual_action_rejects_non_unit_quantity_without_mutation() -> None:
+    world = create_initial_world()
+    actor = world.adventurers["rhea-vale"]
+
+    next_world, events = apply_intent(
+        world,
+        ActionIntent(actor.id, ActionKind.OBSERVE, quantity=999),
+    )
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].reason == "invalid_quantity"
+
+
+@pytest.mark.parametrize("quantity", (True, 0, -1, 2))
+def test_move_requires_exact_unit_integer_quantity(quantity: int) -> None:
+    world = create_initial_world()
+    actor = world.adventurers["rhea-vale"]
+
+    next_world, events = apply_intent(
+        world,
+        ActionIntent(
+            actor.id,
+            ActionKind.MOVE,
+            target_location_id="emberfall-inn",
+            quantity=quantity,
+        ),
+    )
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].reason == "invalid_quantity"
+
+
+def test_contextual_non_move_rejects_unexpected_target_without_mutation() -> None:
+    world = create_initial_world()
+    actor = world.adventurers["rhea-vale"]
+
+    next_world, events = apply_intent(
+        world,
+        ActionIntent(
+            actor.id,
+            ActionKind.OBSERVE,
+            target_location_id="emberfall-inn",
+        ),
+    )
+
+    assert next_world is world
+    assert isinstance(events[0], ActionRejected)
+    assert events[0].reason == "unexpected_target_location"
+
+
+def test_every_fixture_contextual_action_resolves_with_its_grounded_action_id() -> None:
+    world = create_initial_world()
+    base_actor = world.adventurers["rhea-vale"]
+
+    for location in world.locations.values():
+        for configured in location.contextual_actions:
+            actor = replace(base_actor, location_id=location.id, resources=1)
+            at_location = replace(world, adventurers={**world.adventurers, actor.id: actor})
+            next_world, events = apply_intent(
+                at_location, ActionIntent(actor.id, configured.kind)
+            )
+
+            if configured.requires_completed_contract:
+                assert next_world is at_location
+                assert isinstance(events[0], ActionRejected)
+                assert events[0].reason == "completed_contract_not_representable"
+            else:
+                assert isinstance(events[0], ActionSucceeded)
+                assert dict(events[0].details)["location_id"] == location.id
+                assert dict(events[0].details)["action_id"] == configured.id
