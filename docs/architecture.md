@@ -44,7 +44,10 @@ Persisted result + world/identity/recent events -> AI Storyteller -> Terminal Pr
   boundary를 통해서만 Textual main loop에 선택을 요청합니다. headless/replay/history CLI는
   full-screen app과 독립적으로 동작합니다.
 - 마을 root는 단일 `관찰` 장소가 아니라 내부 시설을 직접 고르는 hub로 투영합니다. 시설 진입은
-  canonical `MOVE`를 유지하고, 마을 밖 경로만 별도 이동 추천 화면으로 보냅니다.
+  canonical `MOVE`를 유지하고, 마을 밖 경로만 별도 이동 추천 화면으로 보냅니다. 시설의 rules incident는
+  scheduler 전의 ephemeral prompt walk이며 terminal response만 `ENGAGE_INCIDENT` intent로 전환합니다.
+  `Esc`는 iterative hub loop로 전체 walk를 버려 tick/story/log를 만들지 않습니다. `직접 답하기`는 NFC 정규화,
+  trim·공백 collapse 뒤 현재 prompt의 40자 이하 alias만 canonical response ID로 바꾸고 raw string을 넘기지 않습니다.
 - 플레이어에게 보이는 지역명은 canonical location ID와 분리된 한국어 projection입니다.
   한 시간의 서사는 모든 actor intent의 일괄 판정, progression, Story resolution, history append가
   끝난 뒤 확정된 `DomainEvent`와 최종 상태만 읽어 생성하며 세계 상태를 다시 변경하지 않습니다.
@@ -60,14 +63,15 @@ Persisted result + world/identity/recent events -> AI Storyteller -> Terminal Pr
 - 난수는 실행 시드에서 파생합니다.
 - 같은 초기 상태, 규칙 버전, 시드, 행동열은 같은 사건과 최종 상태를 생성해야 합니다.
 - actor RNG는 seed/tick/actor channel에서 독립적으로 파생해 proposal 도착 순서에 의존하지 않습니다.
-- v3 로그는 초기 world/seed/주인공 표시 정보와 versioned natural-language human identity profile,
-  actor proposal, StoryIntent와 resolution을 저장하고,
-  `run_init`/`run_end`의 완료 tick 수·final tick·world digest commitment로 tail truncation을 거부합니다.
+- v6 로그는 초기 world/seed/주인공 표시 정보와 versioned natural-language human identity profile,
+  actor proposal, StoryIntent와 resolution을 저장하고, `ENGAGE_INCIDENT` proposal에는 `interaction`의
+  incident ID와 prompt/response ID path만 저장합니다. `run_init`/`run_end`의 완료 tick 수·final tick·world
+  digest commitment로 tail truncation을 거부합니다. schema v5/rules v4는 immutable pre-incident snapshot으로
+  재구성하고 v2~v4는 각 legacy branch를 유지합니다.
 - strict replay는 JSON 정수 field에 `type(value) is int`를 요구해 Python에서 `true == 1`인
   언어 특성이 canonical scalar type 검증을 우회하지 못하게 합니다.
 - v2 validator는 별도 strict branch로 유지되며 기존 로그를 rewrite하거나 자동 migration하지 않습니다.
-- 새 v3 실행은 rules version 2를 기록합니다. committed v2/rules version 1은 location affordance와
-  legacy EXP semantics를 격리한 replay-only branch에서 재적용합니다.
+  v3/rules v2와 v4/rules v3도 같은 방식으로 frozen package snapshot에서만 재구성합니다.
 - human identity는 `WorldState`나 rules modifier가 아니라 hash-covered `run_init`과 history
   metadata입니다. 해설의 관점만 바꾸며 목적지 집합·추천 순서·판정을 바꾸지 않습니다.
 - replay는 policy나 Story Director를 재호출하지 않고 저장된 proposal을 규칙 엔진에 다시 적용해

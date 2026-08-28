@@ -15,7 +15,10 @@ loader, validator, runtime scenario, life-event catalog, replay tests를 함께 
 - `emberfall-plaza` — **Prismwake Square**: 공지와 길 안내
 - `emberfall-tavern` — **The Copper Comet**: 식사와 검증된 소문
 
-각 시설에는 `controller="rules"`인 규칙 기반 NPC가 정확히 하나 있어야 한다.
+각 시설에는 `controller="rules"`인 규칙 기반 NPC가 정확히 하나 있어야 한다. `emberfall-shop`의 Orrin은
+`orrin-cracked-crate` incident로 `금 간 화물 상자`를 제시한다. 이는 `상자를 살펴본다`/`정중히 거절한다`로
+시작하고 조사 선택은 `금 간 등불을 짚어준다`/`할인가에 흠집 등불을 산다`로 끝나는 deterministic response path다.
+원문 자유 입력은 콘텐츠·world state가 아니라 현재 prompt alias를 canonical response ID로 고르는 UI 경계에만 있다.
 
 ## Mossreach Wilds
 

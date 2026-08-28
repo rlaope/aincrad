@@ -5,13 +5,15 @@
 - 이벤트 JSON은 canonical serialization을 사용한다.
 - JSONL은 연속 `seq`와 SHA-256 `prev_event_hash`/`event_hash` 체인을 유지한다.
 - 기존 이벤트 로그는 기본적으로 덮어쓰지 않는다. 명시적 `--force`만 원자 교체한다.
-- versioned run은 schema와 rules/content revision을 함께 고정한다. 새 write는 schema v5/rules v4와
-  current package world를 사용한다. schema v4/rules v3 strict replay는
+- versioned run은 schema와 rules/content revision을 함께 고정한다. 새 write는 schema v6/rules v5와
+  current package world를 사용한다. schema v5/rules v4 strict replay는
+  `glassfrontier_world_rules_v4.json`, schema v4/rules v3 replay는
   `glassfrontier_world_rules_v3.json`, schema v3/rules v2 replay는
   `glassfrontier_world_rules_v2.json` snapshot만 각각 재구성에 사용한다. schema v2는 legacy
-  reducer를 유지한다. replay는 canonical event payload와 final digest를 줄이거나 stripping하지 않고
-  비교한다. loader는 trusted revision allowlist만 받아 같은 fail-closed validator를 거치며 임의
-  resource/path를 받지 않는다.
+  reducer를 유지한다. v6의 incident proposal에는 `interaction`의 canonical ID path 또는 `null`만
+  허용하며, raw input field와 bool quantity를 거부한다. replay는 canonical event payload와 final digest를
+  줄이거나 stripping하지 않고 비교한다. loader는 trusted revision allowlist만 받아 같은 fail-closed validator를
+  거치며 임의 resource/path를 받지 않는다.
 - Emberfall hub에서 시설 선택은 world를 바꾸지 않는 submenu만 연다. 선택한 contextual action은
   `target_location_id`로 시설을 지정해 진입과 action을 원자적으로 판정하며 정확히 한 tick만 소비한다.
   Escape/back은 hub로 돌아가고, wilds/dungeon 등 외부 MOVE는 계속 한 tick을 소비한다.

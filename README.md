@@ -74,7 +74,12 @@ aincrad
 확정 사실과 세계관·identity·관계·파티·최근 사건을 바탕으로 장면을 자유롭게 서술합니다. 문장은 실행마다 달라도 되며 canonical
 event나 hash에는 저장되지 않습니다. 장면은 한 글자씩 나타나고 문장부호마다 잠시 멈춥니다.
 재생 중 Enter는 전체 문장을 즉시 표시하며, 표시 완료 후 Enter를 눌러야 다음 시간으로 갑니다.
-잿불마을에서는 상점·여관·의뢰소·광장·주점이 행동 화면에 내부 시설로 직접 표시됩니다.
+잿불마을에서는 상점·여관·의뢰소·광장·주점이 행동 화면에 내부 시설로 직접 표시됩니다. 상점의 Orrin은
+`금 간 화물 상자`라는 규칙 기반 부탁을 제시하며, 두 단계의 정해진 응답 ID를 고른 뒤에만 한 시간
+판정으로 넘어갑니다. `Esc`는 그 부탁 전체를 버리고 시설/마을 hub로 되돌아가며 tick·story·log를
+만들지 않습니다. 각 질문에는 `직접 답하기`도 있으며, 현재 질문의 정규화한 한글 별칭만 최대 40자로
+정확히 일치시켜 canonical 응답 ID로 바꿉니다. 원문 입력은 action, event, history, hash에 저장하지
+않습니다.
 `마을 밖으로 이동` 또는 다른 지역의 이동 화면은 결정론적으로 추천한 목적지 최대 세 곳과
 전체 합법 경로를 여는 `기타 목적지`를 표시합니다. 각 목적지는 현재 장소와 HP/MP에 근거한 물리적 조건과, 선택한 정체성에 따른
 사회 조사 관점을 함께 설명합니다. 홈의 `설정`에서 풍부하거나 간결한 이야기 방식을 바꿀 수
@@ -110,10 +115,11 @@ aincrad replay runs/demo/events.jsonl --verify-hash
 현재 던전 1~10단계와 보스방은 이동 가능한 세계 구조와 콘텐츠 메타데이터까지
 구현되어 있습니다. 퀘스트 제안·완료와 동료 합류·이탈은 고정 시간표가 아니라 현재
 장소, 관찰된 행동, 관계 점수, 콘텐츠 catalog에서 생성된 Story proposal을 규칙 엔진이
-검증해 처리합니다. 확정 actor proposal, StoryIntent, 수락·거부 결과는 완료 tick 수와
-최종 world digest를 약정하는 `run_end` 포함 v3 해시 체인 로그에 저장됩니다. v3의
-`run_init`은 검증된 identity profile과 rules version 2를 포함하고, 기존 v2/rules version 1 로그는
-version-isolated legacy rules로 변경 없이 계속 replay됩니다.
+검증해 처리합니다. 확정 actor proposal, StoryIntent, 수락·거부 결과는 완료 tick 수와 최종 world digest를 약정하는
+`run_end` 포함 v6 해시 체인 로그에 저장됩니다. v6의 `run_init`은 검증된 identity profile과 rules
+version 5를 포함하며, incident proposal은 `incident_id`와 prompt/response ID path만 저장합니다.
+raw text나 여분 proposal key는 strict replay가 거부합니다. schema v5/rules v4의 pre-incident
+snapshot과 기존 v2~v4 로그는 version-isolated rules로 변경 없이 계속 replay됩니다.
 외부 AI 문장은 tick, hash, history에 저장하지 않습니다. replay는
 AI policy나 Story Director를 다시 호출하지 않습니다. 성장,
 던전 이동 위험, 전투·보스 도전 피해, 영구 사망도 runtime과 replay에 연결되어 있습니다.
