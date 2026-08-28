@@ -48,7 +48,7 @@ Persisted result + world/identity/recent events -> AI Storyteller -> Terminal Pr
 - 플레이어에게 보이는 지역명은 canonical location ID와 분리된 한국어 projection입니다.
   한 시간의 서사는 모든 actor intent의 일괄 판정, progression, Story resolution, history append가
   끝난 뒤 확정된 `DomainEvent`와 최종 상태만 읽어 생성하며 세계 상태를 다시 변경하지 않습니다.
-  서사는 전용 Textual screen에서 한 글자씩 재생되고 문장부호마다 추가 pause를 둡니다.
+  서사는 전용 Textual screen을 먼저 열어 준비 상태를 즉시 보여 준 뒤 한 글자씩 재생되고 문장부호마다 추가 pause를 둡니다.
   재생 중 Enter는 전체 표시, 표시 완료 후 Enter는 닫기이며, 그 뒤에만 다음 시간 진행 여부를 묻습니다.
 
 ## 시간
@@ -60,7 +60,7 @@ Persisted result + world/identity/recent events -> AI Storyteller -> Terminal Pr
 - 난수는 실행 시드에서 파생합니다.
 - 같은 초기 상태, 규칙 버전, 시드, 행동열은 같은 사건과 최종 상태를 생성해야 합니다.
 - actor RNG는 seed/tick/actor channel에서 독립적으로 파생해 proposal 도착 순서에 의존하지 않습니다.
-- v3 로그는 초기 world/seed/주인공 표시 정보와 enum-coded human identity profile,
+- v3 로그는 초기 world/seed/주인공 표시 정보와 versioned natural-language human identity profile,
   actor proposal, StoryIntent와 resolution을 저장하고,
   `run_init`/`run_end`의 완료 tick 수·final tick·world digest commitment로 tail truncation을 거부합니다.
 - strict replay는 JSON 정수 field에 `type(value) is int`를 요구해 Python에서 `true == 1`인

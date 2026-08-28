@@ -214,13 +214,13 @@ edge를 따라 `run_init` 또는 fixture fact까지 역추적합니다. 근거�
 
 ### 유지
 
-- 네 차원의 enum-coded human identity와 v3 metadata
+- 자연어 성격·특징을 담는 versioned human identity와 v3 metadata
 - committed v2 replay compatibility
 - Textual full-screen, 40×24·80×24 responsive flow
 - 추천 최대 세 곳과 `기타 목적지`
 - 장소별 fixture-backed action과 achievement-only EXP
 - simulation-first, post-persist 자유 AI turn narrative
-- bounded Hermes/Kimi storyteller와 deterministic local fallback
+- bounded 외부 storyteller와 확정 사실 기반의 간결한 offline fallback
 
 ### 수정·확장
 
