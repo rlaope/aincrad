@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast
@@ -141,10 +141,16 @@ def _integer(value: object, field: str) -> int:
     return value
 
 
-def _validate_actions(place: Mapping[str, object], field: str) -> None:
+def _validate_actions(
+    place: Mapping[str, object],
+    field: str,
+    *,
+    expected_kinds_for: Callable[[str], tuple[str, ...]] | None = None,
+) -> None:
     location_id = _text(place.get("id"), f"{field}.id")
+    resolver = expected_action_kinds if expected_kinds_for is None else expected_kinds_for
     try:
-        expected_kinds = expected_action_kinds(location_id)
+        expected_kinds = resolver(location_id)
     except KeyError as error:
         raise FixtureSchemaError(
             f"location {location_id} has no canonical action coverage"
@@ -185,7 +191,9 @@ def _validate_actions(place: Mapping[str, object], field: str) -> None:
                 _integer(action[number], f"action {action_id}.{number}")
 
 
-def _validate_facilities(town: Mapping[str, object]) -> list[Mapping[str, object]]:
+def _validate_facilities(
+    town: Mapping[str, object], *, expected_kinds_for: Callable[[str], tuple[str, ...]] | None
+) -> list[Mapping[str, object]]:
     facilities = _objects(town.get("facilities"), "town.facilities")
     expected_kinds: set[str] = {"shop", "inn", "quest_hall", "plaza", "tavern"}
     if len(facilities) != 5 or {item.get("kind") for item in facilities} != expected_kinds:
@@ -200,7 +208,7 @@ def _validate_facilities(town: Mapping[str, object]) -> list[Mapping[str, object
             raise FixtureSchemaError(
                 f"facility {facility_id} services must match canonical coverage"
             )
-        _validate_actions(facility, "facility")
+        _validate_actions(facility, "facility", expected_kinds_for=expected_kinds_for)
         action_services = tuple(
             _text(action.get("service"), f"facility {facility_id}.actions.service")
             for action in _objects(facility.get("actions"), f"facility {facility_id}.actions")
@@ -211,7 +219,9 @@ def _validate_facilities(town: Mapping[str, object]) -> list[Mapping[str, object
     return facilities
 
 
-def _validate_dungeon(dungeon: Mapping[str, object]) -> list[Mapping[str, object]]:
+def _validate_dungeon(
+    dungeon: Mapping[str, object], *, expected_kinds_for: Callable[[str], tuple[str, ...]] | None
+) -> list[Mapping[str, object]]:
     floors = _objects(dungeon.get("floors"), "dungeon.floors")
     depths = [item.get("depth") for item in floors]
     if depths != list(range(1, 11)):
@@ -219,7 +229,7 @@ def _validate_dungeon(dungeon: Mapping[str, object]) -> list[Mapping[str, object
     for floor in floors:
         floor_id = _text(floor.get("id"), "dungeon floor.id")
         _text(floor.get("description"), f"dungeon floor {floor_id}.description")
-        _validate_actions(floor, "dungeon floor")
+        _validate_actions(floor, "dungeon floor", expected_kinds_for=expected_kinds_for)
         _connections(floor, f"dungeon floor {floor_id}")
     if any(floor.get("kind") != "dungeon_floor" for floor in floors[:-1]):
         raise FixtureSchemaError("dungeon depths 1 through 9 must be dungeon_floor")
@@ -244,7 +254,9 @@ def _unique_ids(items: Sequence[Mapping[str, object]], field: str) -> list[str]:
     return ids
 
 
-def validate_world_fixture(world: object) -> WorldFixture:
+def validate_world_fixture(
+    world: object, *, expected_kinds_for: Callable[[str], tuple[str, ...]] | None = None
+) -> WorldFixture:
     root = _object(world, "world fixture root")
     required = {
         "schema_version",
@@ -280,13 +292,13 @@ def validate_world_fixture(world: object) -> WorldFixture:
     if len(adventurers) != 3:
         raise FixtureSchemaError("fixture requires exactly three candidate adventurers")
 
-    facilities = _validate_facilities(towns[0])
-    floors = _validate_dungeon(dungeons[0])
-    _validate_actions(towns[0], "town")
+    facilities = _validate_facilities(towns[0], expected_kinds_for=expected_kinds_for)
+    floors = _validate_dungeon(dungeons[0], expected_kinds_for=expected_kinds_for)
+    _validate_actions(towns[0], "town", expected_kinds_for=expected_kinds_for)
     for ground in grounds:
         ground_id = _text(ground.get("id"), "hunting ground.id")
         _text(ground.get("description"), f"hunting ground {ground_id}.description")
-        _validate_actions(ground, "hunting ground")
+        _validate_actions(ground, "hunting ground", expected_kinds_for=expected_kinds_for)
     places = [*towns, *facilities, *grounds, *floors]
     location_ids = _unique_ids(places, "location")
     known_locations = set(location_ids)
@@ -327,13 +339,15 @@ def validate_world_fixture(world: object) -> WorldFixture:
     return cast(WorldFixture, root)
 
 
-def load_world_fixture(path: str | Path) -> LoadedWorldFixture:
+def load_world_fixture(
+    path: str | Path, *, expected_kinds_for: Callable[[str], tuple[str, ...]] | None = None
+) -> LoadedWorldFixture:
     try:
         with Path(path).open(encoding="utf-8") as stream:
             raw: object = json.load(stream)
     except json.JSONDecodeError as error:
         raise FixtureSchemaError(f"invalid JSON fixture: {error.msg}") from error
-    world = validate_world_fixture(raw)
+    world = validate_world_fixture(raw, expected_kinds_for=expected_kinds_for)
     result = cast(LoadedWorldFixture, dict(world))
     result["location_ids"] = tuple(
         [item["id"] for item in world["towns"]]
@@ -344,9 +358,41 @@ def load_world_fixture(path: str | Path) -> LoadedWorldFixture:
     return result
 
 
-def load_packaged_world_fixture() -> LoadedWorldFixture:
-    """Load the canonical world JSON from installed package resources."""
+_RULES_V2_ACTION_KINDS: Mapping[str, tuple[str, ...]] = {
+    "emberfall": ("observe",),
+    "emberfall-shop": ("buy_supplies", "sell_salvage"),
+    "emberfall-inn": ("lodge", "store_belongings"),
+    "emberfall-quest-hall": ("list_contracts", "turn_in_contract"),
+    "emberfall-plaza": ("read_notices", "request_directions"),
+    "emberfall-tavern": ("buy_meal", "hear_rumor"),
+    "mossreach": ("hunt", "gather", "scout", "camp"),
+    **{f"vault-{depth}": ("scout", "search", "fight") for depth in range(1, 10)},
+    "vault-10": ("scout", "search", "challenge"),
+}
 
-    resource = files("aincrad.content").joinpath("data", "glassfrontier_world.json")
+
+def _rules_v2_expected_action_kinds(location_id: str) -> tuple[str, ...]:
+    return _RULES_V2_ACTION_KINDS[location_id]
+
+
+_PACKAGED_WORLD_RESOURCES: Mapping[str, str] = {
+    "current": "glassfrontier_world.json",
+    "rules-v2": "glassfrontier_world_rules_v2.json",
+}
+
+
+def load_packaged_world_fixture(*, revision: str = "current") -> LoadedWorldFixture:
+    """Load one validated, trusted world revision from package resources."""
+
+    try:
+        resource_name = _PACKAGED_WORLD_RESOURCES[revision]
+    except KeyError as error:
+        raise ValueError(f"unsupported content revision: {revision!r}") from error
+    resource = files("aincrad.content").joinpath("data", resource_name)
     with as_file(resource) as path:
-        return load_world_fixture(path)
+        return load_world_fixture(
+            path,
+            expected_kinds_for=(
+                _rules_v2_expected_action_kinds if revision == "rules-v2" else None
+            ),
+        )

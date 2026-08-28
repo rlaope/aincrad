@@ -496,8 +496,15 @@ def test_v2_replay_rejects_rehashed_noncanonical_proposal_order(
 ) -> None:
     original_start = _starting_world
 
-    def two_member_start(character_class: CharacterClass, hero_name: str | None = None):
-        world = original_start(character_class, hero_name)
+    def two_member_start(
+        character_class: CharacterClass,
+        hero_name: str | None = None,
+        *,
+        content_revision: str = "current",
+    ):
+        world = original_start(
+            character_class, hero_name, content_revision=content_revision
+        )
         assert world.party is not None
         return replace(
             world,

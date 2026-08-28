@@ -129,7 +129,10 @@ Runner = Callable[..., SimulationResult]
 ReplayRunner = Callable[..., SimulationResult]
 CommentaryProvider = Callable[[MovementCommentaryRequest], MovementCommentaryResult]
 StoryProvider = Callable[[TurnStoryRequest], TurnStoryResult]
-_CURRENT_RULES_VERSION = 2
+_CURRENT_SCHEMA_VERSION = 4
+_CURRENT_RULES_VERSION = 3
+_VERSIONED_RULES_VERSIONS = {2: 1, 3: 2, 4: 3}
+_VERSIONED_CONTENT_REVISIONS = {2: "rules-v2", 3: "rules-v2", 4: "current"}
 
 
 class _ResizeGeneration:
@@ -444,9 +447,12 @@ def _prompt_for_character_menu(
 
 
 def _starting_world(
-    character_class: CharacterClass, hero_name: str | None = None
+    character_class: CharacterClass,
+    hero_name: str | None = None,
+    *,
+    content_revision: str = "current",
 ) -> WorldState:
-    base = create_initial_world()
+    base = create_initial_world(content_revision=content_revision)
     _, _, default_name, stats = next(
         option for option in _CHARACTER_OPTIONS if option[0] is character_class
     )
@@ -1751,8 +1757,8 @@ def _default_run(
             log.append(
                 {
                     "record_type": "run_init",
-                    "version": 3,
-                    "schema_version": 3,
+                    "version": _CURRENT_SCHEMA_VERSION,
+                    "schema_version": _CURRENT_SCHEMA_VERSION,
                     "rules_version": _CURRENT_RULES_VERSION,
                     "world_id": "glassfrontier",
                     "seed": seed,
@@ -1771,7 +1777,7 @@ def _default_run(
                 stored_tick = log.append(
                     {
                         "record_type": "tick",
-                        "version": 3,
+                        "version": _CURRENT_SCHEMA_VERSION,
                         "tick": trace.story_intent.tick - 1,
                         "proposals": [
                             {
@@ -1808,7 +1814,7 @@ def _default_run(
             log.append(
                 {
                     "record_type": "run_end",
-                    "version": 3,
+                    "version": _CURRENT_SCHEMA_VERSION,
                     "expected_tick_count": completed_hours,
                     "final_tick": result.final_state.tick,
                     "final_world_digest": final_world_digest,
@@ -1973,11 +1979,11 @@ def _strict_replay_versioned(
         "final_tick",
         "final_world_digest",
     }
-    if expected_version == 3:
+    if expected_version in {3, 4}:
         init_keys.add("identity")
     if not isinstance(init, dict) or set(init) != init_keys:
         raise ValueError("invalid versioned run initialization")
-    expected_rules_version = 1 if expected_version == 2 else _CURRENT_RULES_VERSION
+    expected_rules_version = _VERSIONED_RULES_VERSIONS[expected_version]
     if (
         init["record_type"] != "run_init"
         or init["version"] != expected_version
@@ -1995,7 +2001,7 @@ def _strict_replay_versioned(
         or len(init["final_world_digest"]) != 64
     ):
         raise ValueError("unsupported versioned run initialization")
-    if expected_version == 3:
+    if expected_version in {3, 4}:
         identity = init["identity"]
         if not isinstance(identity, dict):
             raise ValueError("versioned run identity must be an object")
@@ -2034,7 +2040,11 @@ def _strict_replay_versioned(
     hero_name = validate_hero_name(init["hero_name"])
     character_class = CharacterClass(init["character_class"])
     seed = init["seed"]
-    world = _starting_world(character_class, hero_name)
+    world = _starting_world(
+        character_class,
+        hero_name,
+        content_revision=_VERSIONED_CONTENT_REVISIONS[expected_version],
+    )
     if expected_version == 2:
         world = _legacy_v2_world(world)
     story = StoryState(relationship_scores={(HERO_ID, "rhea-vale"): _INITIAL_RHEA_RELATIONSHIP})
@@ -2240,7 +2250,7 @@ def _default_replay(*, event_log: Path, verify_hash: bool) -> SimulationResult:
         and records[0].event.get("record_type") == "run_init"
     ):
         schema_version = records[0].event.get("schema_version")
-        if type(schema_version) is not int or schema_version not in {2, 3}:
+        if type(schema_version) is not int or schema_version not in {2, 3, 4}:
             raise ValueError("unsupported versioned run initialization")
         return _strict_replay_versioned(
             records,

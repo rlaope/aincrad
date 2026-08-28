@@ -5,7 +5,10 @@
 - 이벤트 JSON은 canonical serialization을 사용한다.
 - JSONL은 연속 `seq`와 SHA-256 `prev_event_hash`/`event_hash` 체인을 유지한다.
 - 기존 이벤트 로그는 기본적으로 덮어쓰지 않는다. 명시적 `--force`만 원자 교체한다.
-- replay는 저장된 intent와 사건을 rules engine에 재적용하고 전체 payload와 최종 상태를 비교한다.
+- versioned run은 schema와 rules/content revision을 함께 고정한다. 새 write는 schema v4/rules v3와
+  current package world를 사용하고, schema v3/rules v2 strict replay는
+  `glassfrontier_world_rules_v2.json` snapshot만 재구성에 사용한다. loader는 trusted revision allowlist만
+  받아 같은 fail-closed validator를 거치며 임의 resource/path를 받지 않는다.
 - 동적 파티 replay는 시간별 정확한 파티 행동 집합과 합류·이탈을 재구성한다.
 - history는 symlink/path escape를 거부하고 canonical JSON, monotonic 회차 번호,
   엄격한 hourly/daily_summary/character_end schema를 유지한다.

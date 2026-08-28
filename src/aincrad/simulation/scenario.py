@@ -14,10 +14,10 @@ _CHARACTER_CLASSES = {
 }
 
 
-def create_initial_world() -> WorldState:
-    """Create the deterministic initial state directly from canonical world content."""
+def create_initial_world(*, content_revision: str = "current") -> WorldState:
+    """Create a deterministic initial state from one trusted content revision."""
 
-    fixture = load_packaged_world_fixture()
+    fixture = load_packaged_world_fixture(revision=content_revision)
     catalog = action_catalog_from_fixture(fixture)
     locations: dict[str, Location] = {}
     town = fixture["towns"][0]

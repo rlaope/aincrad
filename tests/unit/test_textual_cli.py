@@ -529,7 +529,8 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     replayed = _default_replay(event_log=event_logs[0], verify_hash=True)
     assert replayed.summary.status == "해시 검증 완료"
     records = EventLog(event_logs[0]).verify()
-    assert records[0].event["rules_version"] == 2
+    assert records[0].event["schema_version"] == 4
+    assert records[0].event["rules_version"] == 3
     assert records[1].event["action_events"][0]["action"] == ActionKind.OBSERVE.value
 
 
@@ -561,8 +562,15 @@ def test_textual_fatal_hour_shows_story_without_continue_menu(
 ) -> None:
     original_starting_world = _starting_world
 
-    def fragile_world(character_class: CharacterClass, hero_name: str | None = None):
-        world = original_starting_world(character_class, hero_name)
+    def fragile_world(
+        character_class: CharacterClass,
+        hero_name: str | None = None,
+        *,
+        content_revision: str = "current",
+    ):
+        world = original_starting_world(
+            character_class, hero_name, content_revision=content_revision
+        )
         hero = world.adventurers["hero"]
         fragile = replace(hero, location_id="mossreach", stats=replace(hero.stats, hp=1))
         return replace(world, adventurers={**world.adventurers, fragile.id: fragile})

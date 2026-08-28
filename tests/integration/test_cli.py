@@ -93,7 +93,8 @@ def test_movement_awards_zero_xp_and_round_trips_through_hash_replay(
     )
 
     records = EventLog(event_log).verify()
-    assert records[0].event["rules_version"] == 2
+    assert records[0].event["schema_version"] == 4
+    assert records[0].event["rules_version"] == 3
     tick = records[1].event
     hero_event = next(
         event
@@ -129,8 +130,9 @@ def test_identity_profile_round_trips_through_v3_log_and_history(tmp_path: Path)
     replayed = _default_replay(event_log=event_log, verify_hash=True)
 
     init = EventLog(event_log).verify()[0].event
-    assert init["version"] == 3
-    assert init["schema_version"] == 3
+    assert init["version"] == 4
+    assert init["schema_version"] == 4
+    assert init["rules_version"] == 3
     assert init["identity"] == identity.to_json()
     assert replayed.adventurers == simulated.adventurers
     assert HistoryArchive(history_root).load_run(1).metadata["identity"] == identity.to_json()
@@ -761,8 +763,15 @@ def test_dead_hero_history_records_character_end_exactly_once(
 ) -> None:
     original_starting_world = _starting_world
 
-    def fragile_world(character_class: CharacterClass, hero_name: str | None = None):
-        world = original_starting_world(character_class, hero_name)
+    def fragile_world(
+        character_class: CharacterClass,
+        hero_name: str | None = None,
+        *,
+        content_revision: str = "current",
+    ):
+        world = original_starting_world(
+            character_class, hero_name, content_revision=content_revision
+        )
         hero = world.adventurers["hero"]
         fragile = replace(hero, location_id="mossreach", stats=replace(hero.stats, hp=1))
         return replace(world, adventurers={**world.adventurers, fragile.id: fragile})
@@ -847,7 +856,7 @@ def test_strict_replay_round_trips_all_four_classes(
     assert replayed.adventurers == simulated.adventurers
 
 
-@pytest.mark.parametrize("version", (2, 3))
+@pytest.mark.parametrize("version", (2, 3, 4))
 @pytest.mark.parametrize("field", ("version", "expected_tick_count", "final_tick"))
 def test_strict_replay_rejects_boolean_run_end_integer_commitments(
     tmp_path: Path, version: int, field: str
@@ -902,8 +911,15 @@ def test_strict_replay_rejects_records_after_selected_hero_dies(
 ) -> None:
     original_starting_world = _starting_world
 
-    def fragile_world(character_class: CharacterClass, hero_name: str | None = None):
-        world = original_starting_world(character_class, hero_name)
+    def fragile_world(
+        character_class: CharacterClass,
+        hero_name: str | None = None,
+        *,
+        content_revision: str = "current",
+    ):
+        world = original_starting_world(
+            character_class, hero_name, content_revision=content_revision
+        )
         hero = world.adventurers["hero"]
         fragile = replace(
             hero,
