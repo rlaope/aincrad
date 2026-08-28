@@ -113,6 +113,7 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
+        env={**os.environ, "AINCRAD_STORY_MODE": "local"},
         close_fds=True,
     )
     capture = TerminalCapture(master_fd, columns=80, lines=24)
@@ -131,16 +132,18 @@ def test_real_pty_keyboard_flow_restores_terminal_attributes(tmp_path: Path) -> 
         assert "1일차 00:00" in action
         assert "잿불마을" in action
         assert "Emberfall" not in action
+        assert "상점 · 잿불창고 교역소" in action
+        assert "여관 · 고요한 심지 여관" in action
         os.write(master_fd, b"\r")
-        movement = capture.read_until("이동할 곳")
-        assert "물리적:" in movement
-        assert "사회적:" in movement
+        story = capture.read_until("한 시간의 이야기")
+        assert "잿불창고 교역소" in story
+        assert "한 글자씩 재생 중" in story
+        assert "판정 기록" not in story
         os.write(master_fd, b"\r")
-        story = capture.read_until("한 시간의 기록")
-        assert "고요한 심지 여관" in story
-        assert "향했다" in story
-        assert "경험치" in story
-        assert "테스트용사은" not in story
+        complete_story = capture.read_until("판정 기록")
+        assert "향했다" in complete_story
+        assert "경험치" not in complete_story
+        assert "테스트용사은" not in complete_story
         os.write(master_fd, b"\r")
         capture.read_until("여정 계속")
         os.write(master_fd, b"s\r")

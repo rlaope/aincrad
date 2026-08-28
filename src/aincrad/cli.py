@@ -23,11 +23,11 @@ from aincrad.agents import (
 )
 from aincrad.commentary import (
     DestinationCandidate,
-    HermesKimiCommentaryAdapter,
     MovementCommentaryRequest,
     MovementCommentaryResult,
     deterministic_commentary,
 )
+from aincrad.content import available_action_intents, contextual_action_for_intent
 from aincrad.content.events import LIFE_EVENT_CATALOG
 from aincrad.domain import (
     ActionIntent,
@@ -79,6 +79,15 @@ from aincrad.simulation.story import (
     generate_story_candidates,
     resolve_story_intent,
 )
+from aincrad.storytelling import (
+    HermesKimiTurnStoryAdapter,
+    ResolvedAction,
+    ResolvedStoryEvent,
+    TurnPartyMember,
+    TurnStoryRequest,
+    TurnStoryResult,
+    local_turn_story,
+)
 from aincrad.tui import (
     AdventurerView,
     EventView,
@@ -88,7 +97,11 @@ from aincrad.tui import (
 )
 from aincrad.tui.keys import Key, KeyReader, PosixKeyReader
 from aincrad.tui.layout import wrap_display
-from aincrad.tui.localization import location_description_ko, location_name_ko
+from aincrad.tui.localization import (
+    location_description_ko,
+    location_direction_ko,
+    location_name_ko,
+)
 from aincrad.tui.menu import MenuController, MenuOutcome
 from aincrad.tui.narrative import (
     NO_STORY_EVENT_TEXT,
@@ -116,6 +129,8 @@ class SimulationResult:
 Runner = Callable[..., SimulationResult]
 ReplayRunner = Callable[..., SimulationResult]
 CommentaryProvider = Callable[[MovementCommentaryRequest], MovementCommentaryResult]
+StoryProvider = Callable[[TurnStoryRequest], TurnStoryResult]
+_CURRENT_RULES_VERSION = 2
 
 
 class _ResizeGeneration:
@@ -202,6 +217,9 @@ _CHARACTER_OPTIONS = (
     (CharacterClass.MAGE, "마법사", "세이블 퀼", Stats(14, 14, 20, 20)),
     (CharacterClass.TANK, "탱커", "브란 실드", Stats(30, 30, 6, 6)),
 )
+_CLASS_LABELS = {
+    character_class: label for character_class, label, _, _ in _CHARACTER_OPTIONS
+}
 _DEFAULT_IDENTITY_PROFILE = CharacterIdentityProfile(
     inquiry_stance=InquiryStance.CURIOUS,
     risk_attitude=RiskAttitude.BALANCED,
@@ -454,25 +472,7 @@ def _starting_world(
 
 
 def _available_intents(world: WorldState, actor_id: str) -> tuple[ActionIntent, ...]:
-    adventurer = world.adventurers[actor_id]
-    location = world.locations[adventurer.location_id]
-    intents = [
-        ActionIntent(actor_id, ActionKind.MOVE, target_location_id=destination)
-        for destination in sorted(location.connections)
-    ]
-    if location.kind.value == "hunting_ground":
-        intents.append(ActionIntent(actor_id, ActionKind.GATHER))
-    if location.kind.value == "town" and adventurer.resources > 0:
-        intents.append(
-            ActionIntent(actor_id, ActionKind.TRADE, quantity=adventurer.resources)
-        )
-    intents.extend(
-        (
-            ActionIntent(actor_id, ActionKind.REST),
-            ActionIntent(actor_id, ActionKind.WAIT),
-        )
-    )
-    return tuple(intents)
+    return available_action_intents(world, actor_id)
 
 
 def _perception(world: WorldState, actor_id: str) -> Perception:
@@ -502,6 +502,9 @@ def _intent_label(intent: ActionIntent, world: WorldState) -> str:
     action = intent.action.value if isinstance(intent.action, ActionKind) else str(intent.action)
     if action == ActionKind.MOVE.value and intent.target_location_id is not None:
         return f"이동 → {location_name_ko(intent.target_location_id)}"
+    contextual = contextual_action_for_intent(world, intent)
+    if contextual is not None:
+        return contextual.label_ko
     if action == ActionKind.TRADE.value:
         return f"거래 (자원 {intent.quantity}개 판매)"
     return _ACTION_LABELS.get(action, action)
@@ -511,6 +514,9 @@ def _intent_description(intent: ActionIntent, world: WorldState) -> str:
     action = intent.action.value if isinstance(intent.action, ActionKind) else str(intent.action)
     if action == ActionKind.MOVE.value and intent.target_location_id is not None:
         return f"{location_name_ko(intent.target_location_id)}에서 다음 한 시간을 보냅니다"
+    contextual = contextual_action_for_intent(world, intent)
+    if contextual is not None:
+        return contextual.description_ko
     descriptions = {
         ActionKind.GATHER.value: "현재 지역에서 자원과 단서를 찾습니다",
         ActionKind.TRADE.value: "보유 자원을 판매해 여정을 준비합니다",
@@ -543,6 +549,7 @@ def _movement_commentary_request(
     world: WorldState,
     actor_id: str,
     identity_profile: CharacterIdentityProfile,
+    destination_ids: tuple[str, ...] | None = None,
 ) -> MovementCommentaryRequest:
     adventurer = world.adventurers[actor_id]
     location = world.locations[adventurer.location_id]
@@ -553,7 +560,9 @@ def _movement_commentary_request(
             description_ko=location_description_ko(destination_id),
             order=index,
         )
-        for index, destination_id in enumerate(sorted(location.connections))
+        for index, destination_id in enumerate(
+            sorted(destination_ids if destination_ids is not None else location.connections)
+        )
     )
     return MovementCommentaryRequest(
         current_location_name_ko=location_name_ko(location.id),
@@ -574,19 +583,30 @@ def _prompt_for_movement_textual(
     commentary_provider: Callable[
         [MovementCommentaryRequest], MovementCommentaryResult
     ] = deterministic_commentary,
+    move_intents: tuple[ActionIntent, ...] | None = None,
 ) -> ControlledAction:
-    move_intents = tuple(
-        intent
-        for intent in _available_intents(world, actor_id)
-        if intent.action is ActionKind.MOVE
-    )
+    if move_intents is None:
+        move_intents = tuple(
+            intent
+            for intent in _available_intents(world, actor_id)
+            if intent.action is ActionKind.MOVE
+        )
     by_destination = {
         intent.target_location_id: intent
         for intent in move_intents
         if intent.target_location_id is not None
     }
     commentary = commentary_provider(
-        _movement_commentary_request(world, actor_id, identity_profile)
+        _movement_commentary_request(
+            world,
+            actor_id,
+            identity_profile,
+            tuple(
+                intent.target_location_id
+                for intent in move_intents
+                if intent.target_location_id is not None
+            ),
+        )
     )
     recommendation_options: tuple[MenuOption[object], ...] = tuple(
         MenuOption[object](
@@ -757,13 +777,45 @@ def _prompt_for_intent_textual(
         party_size=party_size,
         width=80,
     )
-    options: tuple[MenuOption[object], ...] = (
-        MenuOption[object](
-            "이동하기",
-            f"연결된 길 {len(move_intents)}곳을 물리적·사회적 맥락과 함께 살펴봅니다",
-            _MOVE_CHOICE,
-        ),
-    ) + tuple(
+    facility_labels = {
+        "emberfall-shop": "상점",
+        "emberfall-inn": "여관",
+        "emberfall-quest-hall": "의뢰소",
+        "emberfall-plaza": "광장",
+        "emberfall-tavern": "주점",
+    }
+    facility_intents = tuple(
+        intent
+        for intent in move_intents
+        if adventurer.location_id == "emberfall"
+        and intent.target_location_id in facility_labels
+    )
+    route_intents = tuple(intent for intent in move_intents if intent not in facility_intents)
+    if facility_intents:
+        movement_options: tuple[MenuOption[object], ...] = tuple(
+            MenuOption[object](
+                f"{facility_labels[intent.target_location_id or '']} · "
+                f"{location_name_ko(intent.target_location_id or '')}",
+                location_description_ko(intent.target_location_id or ""),
+                intent,
+            )
+            for intent in facility_intents
+        ) + (
+            MenuOption[object](
+                "마을 밖으로 이동",
+                "마을 경계 밖으로 이어진 길을 살펴봅니다",
+                _MOVE_CHOICE,
+            ),
+        )
+    else:
+        movement_options = (
+            MenuOption[object](
+                "이동하기",
+                f"연결된 길 {len(move_intents)}곳을 물리적·사회적 맥락과 함께 살펴봅니다",
+                _MOVE_CHOICE,
+            ),
+        )
+    options: tuple[MenuOption[object], ...] = movement_options + tuple(
         MenuOption[object](
             _intent_label(intent, world),
             _intent_description(intent, world),
@@ -796,6 +848,7 @@ def _prompt_for_intent_textual(
             interaction=interaction,
             identity_profile=identity_profile,
             commentary_provider=commentary_provider,
+            move_intents=route_intents,
         )
     assert isinstance(selected, ActionIntent)
     return ControlledAction(selected, "user", "user.selected")
@@ -1044,8 +1097,7 @@ def _event_message(event: DomainEvent, world: WorldState) -> str:
 
     details = event_detail_map(event)
     if event.action is ActionKind.MOVE:
-        destination = location_name_ko(event.target_location_id or "")
-        activity = f"{destination}으로 이동했다."
+        activity = f"{location_direction_ko(event.target_location_id or '')} 이동했다."
     elif event.action is ActionKind.REST:
         activity = "안전한 곳에서 쉬며 몸과 마음을 추슬렀다."
     elif event.action is ActionKind.GATHER:
@@ -1112,6 +1164,89 @@ def _story_event_text(trace: TickTrace) -> str | None:
     return template.display_text_ko if template is not None else None
 
 
+def _turn_story_request(
+    world: WorldState,
+    trace: TickTrace,
+    identity_profile: CharacterIdentityProfile,
+    recent_scene_summaries_ko: tuple[str, ...],
+) -> TurnStoryRequest:
+    party = world.party
+    if party is None:
+        raise ValueError("world has no runtime party")
+    hero = world.adventurers[party.selected_hero_id]
+    location = world.locations[hero.location_id]
+    controllers = {proposal.actor_id: proposal.controller for proposal in trace.proposals}
+    proposals = {proposal.actor_id: proposal for proposal in trace.proposals}
+    resolved_actions: list[ResolvedAction] = []
+    for event in trace.action_events:
+        proposal = proposals[event.adventurer_id]
+        actor = world.adventurers[event.adventurer_id]
+        action_story = render_turn_story(
+            world,
+            (event,),
+            controllers={event.adventurer_id: proposal.controller},
+            story_event_text=None,
+        )
+        resolved_actions.append(
+            ResolvedAction(
+                actor_name_ko=actor.name,
+                action_ko=_intent_label(proposal.intent, world),
+                controller_ko={
+                    "user": "사용자",
+                    "baseline_policy": "규칙 기반 동료",
+                    "legacy": "기존 선택기",
+                    "test": "테스트 선택기",
+                }[controllers[event.adventurer_id]],
+                outcome_ko="성공" if isinstance(event, ActionSucceeded) else "실패",
+                details_ko=tuple(line for line in action_story[1:] if line),
+            )
+        )
+    relationship_score = dict(trace.facts).get("relationship_score", ("알 수 없음",))[0]
+    party_view = tuple(
+        TurnPartyMember(
+            name_ko=member.name,
+            public_stats_ko=(
+                f"Lv.{member.level} · HP {member.stats.hp}/{member.stats.max_hp} · "
+                f"MP {member.stats.mp}/{member.stats.max_mp} · EXP {member.exp}"
+            ),
+            roles_ko=(_CLASS_LABELS[member.character_class],),
+            relationships_ko=(
+                (f"레아 베일과의 관계 {relationship_score}/100",)
+                if member.id == party.selected_hero_id
+                else ()
+            ),
+        )
+        for member in (world.adventurers[member_id] for member_id in party.member_ids)
+    )
+    event_text = _story_event_text(trace)
+    completed_tick = min(event.tick for event in trace.action_events)
+    day, hour = divmod(completed_tick, 24)
+    return TurnStoryRequest(
+        world_title="The Glass Frontier",
+        world_lore_summary_ko=(
+            "유리 파편과 오래된 장치가 남은 세계에서 모험가들이 생존하고 관계를 쌓는다."
+        ),
+        day=day + 1,
+        hour=hour,
+        tick=completed_tick,
+        current_location_id=location.id,
+        current_location_name_ko=location_name_ko(location.id),
+        current_location_kind_ko={
+            "town": "마을 또는 마을 내부 시설",
+            "hunting_ground": "사냥터",
+            "dungeon": "던전",
+        }[location.kind.value],
+        current_location_description_ko=location_description_ko(location.id),
+        identity_labels_ko=_identity_labels_ko(identity_profile),
+        party=party_view,
+        selected_actions=tuple(resolved_actions),
+        resolved_story_event=(
+            ResolvedStoryEvent("시간 사건", (event_text,)) if event_text is not None else None
+        ),
+        recent_scene_summaries_ko=recent_scene_summaries_ko,
+    )
+
+
 def _adventurer_views(world: WorldState) -> tuple[AdventurerView, ...]:
     party = world.party
     visible_ids = party.member_ids if party is not None else tuple(world.adventurers)
@@ -1156,6 +1291,45 @@ def _world_digest(world: WorldState) -> str:
     return hashlib.sha256(canonical_json(world).encode("utf-8")).hexdigest()
 
 
+def _legacy_v2_world(world: WorldState) -> WorldState:
+    """Remove post-v2 location affordances before replaying rules version 1."""
+
+    locations = {
+        location_id: replace(
+            location,
+            description="",
+            services=(),
+            contextual_actions=(),
+        )
+        for location_id, location in world.locations.items()
+    }
+    adventurers = dict(world.adventurers)
+    for candidate_id in ("rhea-vale", "tovin-reed", "sable-quill"):
+        candidate = adventurers[candidate_id]
+        adventurers[candidate_id] = replace(
+            candidate,
+            location_id="emberfall",
+            character_class=CharacterClass.WARRIOR,
+        )
+    return replace(world, locations=locations, adventurers=adventurers)
+
+
+def _legacy_v2_world_digest(world: WorldState) -> str:
+    """Hash a world through the exact Location field set committed by v2."""
+
+    payload = to_json_value(world)
+    locations = payload.get("locations")
+    if not isinstance(locations, dict):
+        raise ValueError("legacy v2 world locations must be an object")
+    for raw_location in locations.values():
+        if not isinstance(raw_location, dict):
+            raise ValueError("legacy v2 location must be an object")
+        raw_location.pop("description", None)
+        raw_location.pop("services", None)
+        raw_location.pop("contextual_actions", None)
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
 def _default_run(
     *,
     seed: int,
@@ -1168,6 +1342,7 @@ def _default_run(
     hero_name: str | None = None,
     identity_profile: CharacterIdentityProfile | None = None,
     commentary_provider: CommentaryProvider = deterministic_commentary,
+    story_provider: StoryProvider = local_turn_story,
     history_root: Path | None = None,
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
@@ -1459,6 +1634,44 @@ def _default_run(
         for observer in observers:
             observer(completed_hours, hourly)
 
+    recent_scene_summaries_ko: list[str] = []
+
+    def present_story_then_continue(world: WorldState, trace: TickTrace) -> bool:
+        canonical_story = render_turn_story(
+            world,
+            trace.action_events,
+            controllers={
+                proposal.actor_id: proposal.controller for proposal in trace.proposals
+            },
+            story_event_text=_story_event_text(trace),
+        )
+        if interaction is not None and not headless:
+            request = _turn_story_request(
+                world,
+                trace,
+                selected_identity,
+                tuple(recent_scene_summaries_ko[-8:]),
+            )
+            try:
+                projected = story_provider(request)
+            except Exception:
+                projected = local_turn_story(request)
+            interaction.show_story(
+                f"{canonical_story[0]} · 한 시간의 이야기",
+                (
+                    *projected.story_ko.splitlines(),
+                    "",
+                    "── 판정 기록 ──",
+                    *canonical_story[1:],
+                ),
+            )
+            recent_scene_summaries_ko.append(
+                sanitize_terminal_text(" ".join(canonical_story[1:]))[:800]
+            )
+        if trace_continue_decider is None:
+            return True
+        return trace_continue_decider(world, trace)
+
     result = _run_hours(
         initial,
         seed=seed,
@@ -1468,7 +1681,7 @@ def _default_run(
         direct_hero_only=not headless,
         story_director=story_director,
         continue_decider=continue_decider,
-        trace_continue_decider=trace_continue_decider,
+        trace_continue_decider=present_story_then_continue,
         trace_observer=remember_trace,
     )
     party = result.final_state.party
@@ -1510,7 +1723,7 @@ def _default_run(
                     "record_type": "run_init",
                     "version": 3,
                     "schema_version": 3,
-                    "rules_version": 1,
+                    "rules_version": _CURRENT_RULES_VERSION,
                     "world_id": "glassfrontier",
                     "seed": seed,
                     "hero_id": HERO_ID,
@@ -1734,11 +1947,12 @@ def _strict_replay_versioned(
         init_keys.add("identity")
     if not isinstance(init, dict) or set(init) != init_keys:
         raise ValueError("invalid versioned run initialization")
+    expected_rules_version = 1 if expected_version == 2 else _CURRENT_RULES_VERSION
     if (
         init["record_type"] != "run_init"
         or init["version"] != expected_version
         or init["schema_version"] != expected_version
-        or init["rules_version"] != 1
+        or init["rules_version"] != expected_rules_version
         or init["world_id"] != "glassfrontier"
         or init["hero_id"] != HERO_ID
         or type(init["seed"]) is not int
@@ -1791,8 +2005,13 @@ def _strict_replay_versioned(
     character_class = CharacterClass(init["character_class"])
     seed = init["seed"]
     world = _starting_world(character_class, hero_name)
+    if expected_version == 2:
+        world = _legacy_v2_world(world)
     story = StoryState(relationship_scores={(HERO_ID, "rhea-vale"): _INITIAL_RHEA_RELATIONSHIP})
-    scheduler = SimulationScheduler(seed=seed)
+    scheduler = SimulationScheduler(
+        seed=seed,
+        legacy_all_actions_award_xp=expected_version == 2,
+    )
     all_events: list[DomainEvent] = []
     for record in tick_records:
         payload = record.event
@@ -1967,7 +2186,12 @@ def _strict_replay_versioned(
         all_events.extend(hourly.events)
         if not world.adventurers[HERO_ID].alive and record is not tick_records[-1]:
             raise ValueError("replay contains records after selected hero became dead")
-    if world.tick != init["final_tick"] or _world_digest(world) != init["final_world_digest"]:
+    digest = (
+        _legacy_v2_world_digest(world)
+        if expected_version == 2
+        else _world_digest(world)
+    )
+    if world.tick != init["final_tick"] or digest != init["final_world_digest"]:
         raise ValueError("versioned replay final world commitment does not match")
     replay_status = "해시 검증 완료" if hash_verified else "스키마 검증 완료"
     return SimulationResult(
@@ -2356,13 +2580,21 @@ def _run_home_textual(
     stdout: TextIO,
     history_root: Path,
     interaction: TextualInteraction,
+    story_provider: StoryProvider | None = None,
 ) -> int:
     commentary_provider: CommentaryProvider = deterministic_commentary
+    selected_story_provider: StoryProvider = (
+        local_turn_story
+        if story_provider is None and os.environ.get("AINCRAD_STORY_MODE") == "local"
+        else HermesKimiTurnStoryAdapter().story
+        if story_provider is None
+        else story_provider
+    )
     home_options = (
         MenuOption("새 모험", "직업과 이름을 정해 첫 시간을 시작합니다", "start"),
         MenuOption(
-            "해설 AI",
-            "로컬 규칙 해설 또는 사용자 인증 Kimi를 선택합니다",
+            "스토리 AI",
+            "판정 뒤 장면을 쓰는 로컬 스토리 또는 사용자 인증 Kimi를 선택합니다",
             "commentator",
         ),
         MenuOption("히스토리", "저장된 여정의 시간별 기록을 엽니다", "history"),
@@ -2378,27 +2610,27 @@ def _run_home_textual(
             return 0
         if selected == "commentator":
             commentator = interaction.choose(
-                "해설 AI 설정",
+                "스토리 AI 설정",
                 (
                     MenuOption[str | None](
                         "Kimi ultrafast",
-                        "Hermes의 기존 인증을 사용하며 실패하면 로컬 해설로 전환합니다",
+                        "확정된 행동과 결과를 소설 장면으로 쓰며 실패하면 로컬 스토리로 전환합니다",
                         "kimi",
                     ),
                     MenuOption[str | None](
-                        "로컬 규칙 해설",
-                        "네트워크 없이 같은 상태에서 같은 해설을 만듭니다",
+                        "로컬 스토리",
+                        "네트워크 없이 확정된 사실로 한 시간의 장면을 만듭니다",
                         "deterministic",
                     ),
                     MenuOption[str | None]("뒤로", "현재 설정을 유지합니다", None),
                 ),
-                subtitle="AI는 설명만 하며 세계 상태와 판정은 바꾸지 않습니다",
+                subtitle="스토리는 판정 뒤 생성되며 세계 상태와 결과를 바꾸지 않습니다",
                 allow_back=True,
             )
             if commentator == "kimi":
-                commentary_provider = HermesKimiCommentaryAdapter().commentary
+                selected_story_provider = HermesKimiTurnStoryAdapter().story
             elif commentator == "deterministic":
-                commentary_provider = deterministic_commentary
+                selected_story_provider = local_turn_story
             continue
         if selected == "history":
             archive = HistoryArchive(history_root)
@@ -2453,19 +2685,6 @@ def _run_home_textual(
             continue
 
         def continue_after_hour(world: WorldState, trace: TickTrace) -> bool:
-            story_lines = render_turn_story(
-                world,
-                trace.action_events,
-                controllers={
-                    proposal.actor_id: proposal.controller
-                    for proposal in trace.proposals
-                },
-                story_event_text=_story_event_text(trace),
-            )
-            interaction.show_text(
-                f"{story_lines[0]} · 한 시간의 기록",
-                story_lines[1:],
-            )
             party = world.party
             if party is None:
                 raise ValueError("world has no runtime party")
@@ -2500,6 +2719,7 @@ def _run_home_textual(
                 force=False,
                 history_root=history_root,
                 commentary_provider=commentary_provider,
+                story_provider=selected_story_provider,
                 stdin=stdin,
                 stdout=stdout,
                 trace_continue_decider=continue_after_hour,

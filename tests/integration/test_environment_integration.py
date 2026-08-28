@@ -174,7 +174,7 @@ def test_action_menu_shows_decision_context_and_keeps_ai_last() -> None:
     assert "MP 8/8" in frame
     assert "Lv.1" in frame
     assert "파티 1명" in frame
-    assert frame.rindex("AI 판단에 맡기기") > frame.rindex("대기")
+    assert frame.rindex("AI 판단에 맡기기") > frame.rindex("온천 관찰")
 
 
 def test_continue_context_keeps_korean_status_after_story() -> None:

@@ -201,6 +201,86 @@ class TextScreen(ModalScreen[None]):
         self.query_one("#text-scroll", VerticalScroll).action_scroll_down()
 
 
+class StoryScreen(ModalScreen[None]):
+    """Reveal one resolved hourly scene with readable typewriter cadence."""
+
+    CHARACTER_DELAY_SECONDS = 0.03
+    PUNCTUATION_DELAY_SECONDS = 0.15
+    PARAGRAPH_DELAY_SECONDS = 0.2
+    BINDINGS = [
+        ("w", "scroll_up", "위"),
+        ("s", "scroll_down", "아래"),
+        ("enter", "advance", "전체 표시/계속"),
+    ]
+
+    def __init__(self, title: str, body_lines: Sequence[str]) -> None:
+        super().__init__()
+        self._title = sanitize_terminal_text(title)
+        self._full_text = "\n".join(sanitize_terminal_text(line) for line in body_lines)
+        self._revealed_count = 0
+
+    @property
+    def revealed_text(self) -> str:
+        return self._full_text[: self._revealed_count]
+
+    @property
+    def is_complete(self) -> bool:
+        return self._revealed_count >= len(self._full_text)
+
+    def compose(self) -> ComposeResult:
+        with Container(id="dialog"):
+            yield Static("◆ THE GLASS FRONTIER", id="brand", markup=False)
+            yield Static(self._title, id="screen-title", markup=False)
+            with VerticalScroll(id="text-scroll"):
+                yield Static("", id="story-text", markup=False)
+            yield Static(
+                "한 글자씩 재생 중 · Enter 전체 표시",
+                id="hint",
+                markup=False,
+            )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.set_timer(self.CHARACTER_DELAY_SECONDS, self._reveal_next)
+
+    def _reveal_next(self) -> None:
+        if self.is_complete:
+            return
+        self._revealed_count += 1
+        self.query_one("#story-text", Static).update(self.revealed_text)
+        self.query_one("#text-scroll", VerticalScroll).scroll_end(animate=False)
+        if self.is_complete:
+            self._show_continue_hint()
+            return
+        character = self.revealed_text[-1]
+        delay = (
+            self.PARAGRAPH_DELAY_SECONDS
+            if character == "\n"
+            else self.PUNCTUATION_DELAY_SECONDS
+            if character in ".!?。！？…"
+            else self.CHARACTER_DELAY_SECONDS
+        )
+        self.set_timer(delay, self._reveal_next)
+
+    def _show_continue_hint(self) -> None:
+        self.query_one("#hint", Static).update("W/S 스크롤 · Enter 계속")
+
+    def action_advance(self) -> None:
+        if not self.is_complete:
+            self._revealed_count = len(self._full_text)
+            self.query_one("#story-text", Static).update(self.revealed_text)
+            self.query_one("#text-scroll", VerticalScroll).scroll_end(animate=False)
+            self._show_continue_hint()
+            return
+        self.dismiss(None)
+
+    def action_scroll_up(self) -> None:
+        self.query_one("#text-scroll", VerticalScroll).action_scroll_up()
+
+    def action_scroll_down(self) -> None:
+        self.query_one("#text-scroll", VerticalScroll).action_scroll_down()
+
+
 class TextualInteraction:
     def __init__(self, app: AincradTextualApp) -> None:
         self._app = app
@@ -254,6 +334,9 @@ class TextualInteraction:
 
     def show_text(self, title: str, body_lines: Sequence[str]) -> None:
         self._show(TextScreen(title, body_lines))
+
+    def show_story(self, title: str, body_lines: Sequence[str]) -> None:
+        self._show(StoryScreen(title, body_lines))
 
 
 class AincradTextualApp(App[int]):

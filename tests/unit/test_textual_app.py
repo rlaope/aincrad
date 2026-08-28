@@ -12,6 +12,7 @@ from aincrad.tui.textual_app import (
     MenuScreen,
     NameScreen,
     TextScreen,
+    TextualInteraction,
 )
 
 
@@ -101,7 +102,11 @@ def test_four_home_options_fit_inside_a_40_by_24_viewport() -> None:
             "메인 메뉴",
             (
                 MenuOption("새 모험", "직업과 이름을 정해 첫 시간을 시작합니다", "start"),
-                MenuOption("해설 AI", "로컬 규칙 또는 Kimi 해설을 선택합니다", "commentator"),
+                MenuOption(
+                    "스토리 AI",
+                    "Kimi 자유 서사 또는 로컬 fallback을 선택합니다",
+                    "commentator",
+                ),
                 MenuOption("히스토리", "저장된 여정의 시간별 기록을 엽니다", "history"),
                 MenuOption("종료", "터미널로 돌아갑니다", "exit"),
             ),
@@ -231,6 +236,38 @@ def test_text_screen_scrolls_with_w_and_s() -> None:
             await pilot.pause()
             assert scroll.scroll_y == 0
             await pilot.press("enter")
+
+    asyncio.run(exercise())
+
+
+def test_textual_interaction_has_a_dedicated_story_animation_api() -> None:
+    assert hasattr(TextualInteraction, "show_story")
+
+
+def test_story_screen_reveals_text_over_time_then_enter_skips_and_continues() -> None:
+    story = "등불 아래에서 한 시간의 선택이 천천히 이야기로 펼쳐졌다. " * 8
+
+    def session(ui):  # type: ignore[no-untyped-def]
+        ui.show_story("한 시간의 이야기", (story,))
+        return 0
+
+    async def exercise() -> None:
+        app = AincradTextualApp(session)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause(0.12)
+            screen = app.screen
+            assert screen.__class__.__name__ == "StoryScreen"
+            revealed = screen.revealed_text  # type: ignore[attr-defined]
+            assert 0 < len(revealed) < len(story)
+            assert "Enter 전체 표시" in str(screen.query_one("#hint", Static).content)
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen.revealed_text == story  # type: ignore[attr-defined]
+            assert "Enter 계속" in str(screen.query_one("#hint", Static).content)
+
+            await pilot.press("enter")
+            await pilot.pause()
 
     asyncio.run(exercise())
 
