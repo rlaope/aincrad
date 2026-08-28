@@ -44,7 +44,8 @@ Persisted result + world/identity/recent events -> AI Storyteller -> Terminal Pr
   boundary를 통해서만 Textual main loop에 선택을 요청합니다. headless/replay/history CLI는
   full-screen app과 독립적으로 동작합니다.
 - 마을 root는 단일 `관찰` 장소가 아니라 내부 시설을 직접 고르는 hub로 투영합니다. 시설 진입은
-  canonical `MOVE`를 유지하고, 마을 밖 경로만 별도 이동 추천 화면으로 보냅니다. 시설의 rules incident는
+  `scene` edge의 target을 가진 contextual action으로 원자 판정하고, hub에서 시설로 향하는 일반
+  `MOVE`는 거부합니다. 시설에서 hub로 나오는 scene egress만 다음 이동 후보가 됩니다. 시설의 rules incident는
   scheduler 전의 ephemeral prompt walk이며 terminal response만 `ENGAGE_INCIDENT` intent로 전환합니다.
   `Esc`는 iterative hub loop로 전체 walk를 버려 tick/story/log를 만들지 않습니다. `직접 답하기`는 NFC 정규화,
   trim·공백 collapse 뒤 현재 prompt의 40자 이하 alias만 canonical response ID로 바꾸고 raw string을 넘기지 않습니다.
@@ -63,11 +64,13 @@ Persisted result + world/identity/recent events -> AI Storyteller -> Terminal Pr
 - 난수는 실행 시드에서 파생합니다.
 - 같은 초기 상태, 규칙 버전, 시드, 행동열은 같은 사건과 최종 상태를 생성해야 합니다.
 - actor RNG는 seed/tick/actor channel에서 독립적으로 파생해 proposal 도착 순서에 의존하지 않습니다.
-- v6 로그는 초기 world/seed/주인공 표시 정보와 versioned natural-language human identity profile,
+- v7 로그는 초기 world/seed/주인공 표시 정보와 versioned natural-language human identity profile,
   actor proposal, StoryIntent와 resolution을 저장하고, `ENGAGE_INCIDENT` proposal에는 `interaction`의
   incident ID와 prompt/response ID path만 저장합니다. `run_init`/`run_end`의 완료 tick 수·final tick·world
-  digest commitment로 tail truncation을 거부합니다. schema v5/rules v4는 immutable pre-incident snapshot으로
-  재구성하고 v2~v4는 각 legacy branch를 유지합니다.
+  digest commitment로 tail truncation을 거부합니다. 지리 node는 공개 `region`·`terrain`, edge는
+  `scene`·`overland`·`dungeon_gate`·`dungeon` kind와 한국어 경로 설명을 가지며, 현재 rules에서
+  한 MOVE는 인접 edge 하나만 통과합니다. schema v6/rules v5는 immutable pre-geography snapshot으로,
+  v5/rules v4는 pre-incident snapshot으로 재구성하고 v2~v4는 각 legacy branch를 유지합니다.
 - strict replay는 JSON 정수 field에 `type(value) is int`를 요구해 Python에서 `true == 1`인
   언어 특성이 canonical scalar type 검증을 우회하지 못하게 합니다.
 - v2 validator는 별도 strict branch로 유지되며 기존 로그를 rewrite하거나 자동 migration하지 않습니다.
@@ -96,7 +99,9 @@ Persisted result + world/identity/recent events -> AI Storyteller -> Terminal Pr
 관찰 facts에서 생성되는 결정론적 baseline입니다. 영구 사망과 boss facts는 Director의 재량
 proposal 밖에 있으며 코어 규칙이 소유합니다.
 
-세계 수직 절편은 내부 시설 5곳이 있는 마을 1개, 사냥터 1개, 10단계 던전과 보스방입니다.
+세계 수직 절편은 내부 시설 5곳이 있는 마을 1개, 세 node로 나뉜 Mossreach 사냥 권역,
+10단계 던전과 보스방입니다. Emberfall에서 Vault 1까지는 이끼자락 층계·황야·금고 어귀를
+순서대로 지나며, 지도 projection은 정적 graph의 BFS 거리만 보여 주고 합법 intent를 늘리지 않습니다.
 각 장소는 fixture-backed 합법 행동 catalog를 갖고 시설 거래·숙박·의뢰·공지·식사·소문,
 사냥터 사냥·채집·정찰·야영, 던전 정찰·수색·전투·보스 도전을 제공합니다. 전투와 보스 도전은
 canonical 피해와 영구 사망을 판정합니다. 보스 처치·전이와 의뢰 완료 보상은 아직 미구현입니다.

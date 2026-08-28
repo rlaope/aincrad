@@ -22,7 +22,16 @@ loader, validator, runtime scenario, life-event catalog, replay tests를 함께 
 
 ## Mossreach Wilds
 
-비에 젖은 유리빛 구릉의 사냥터다. Emberfall과 Starless Vault 입구를 연결한다.
+비에 젖은 유리빛 구릉의 사냥 권역이며 다음 세 node가 Emberfall과 Starless Vault 입구를
+순서대로 연결한다.
+
+- `mossreach-terraces` — **이끼자락 층계**: 마을 남문 아래의 젖은 습지 층계
+- `mossreach` — **이끼자락 황야**: 기존 핵심 사냥터와 후보 모험가 시작 위치
+- `mossreach-vaultgate` — **금고 어귀 절벽**: Starless Vault 봉인문 앞의 절벽 관문
+
+한 시간의 MOVE는 `emberfall → mossreach-terraces → mossreach → mossreach-vaultgate →
+vault-1` 중 인접 edge 하나만 통과한다. 원거리 node는 지도에서 거리와 경유지를 볼 수 있지만
+직접 건너뛸 수 없다.
 
 ## The Starless Vault
 
