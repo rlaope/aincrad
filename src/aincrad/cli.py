@@ -87,8 +87,10 @@ from aincrad.simulation.story import (
 from aincrad.storytelling import (
     HermesKimiTurnStoryAdapter,
     ResolvedAction,
+    ResolvedInteraction,
     ResolvedStoryEvent,
     TurnPartyMember,
+    TurnSceneParticipant,
     TurnStoryRequest,
     TurnStoryResult,
     local_turn_story,
@@ -217,6 +219,13 @@ _ACTION_LABELS = {
     "gather": "채집",
     "trade": "거래",
     "wait": "대기",
+}
+_RESIDENT_SERVICE_KO = {
+    "shop": "물품 거래와 보급",
+    "inn": "휴식과 보관",
+    "quest_hall": "의뢰 안내",
+    "plaza": "길 안내",
+    "tavern": "식사와 소문",
 }
 _ACTIVITY_LABELS = {
     "idle": "대기",
@@ -519,12 +528,35 @@ def _intent_label(intent: ActionIntent, world: WorldState) -> str:
     action = intent.action.value if isinstance(intent.action, ActionKind) else str(intent.action)
     if action == ActionKind.MOVE.value and intent.target_location_id is not None:
         return f"이동 → {location_name_ko(intent.target_location_id)}"
+    interaction = _facility_interaction_for_intent(world, intent)
+    if interaction is not None:
+        return interaction.title_ko
     contextual = contextual_action_for_intent(world, intent)
     if contextual is not None:
         return contextual.label_ko
     if action == ActionKind.TRADE.value:
         return f"거래 (자원 {intent.quantity}개 판매)"
     return _ACTION_LABELS.get(action, action)
+
+
+def _facility_interaction_for_intent(
+    world: WorldState, intent: ActionIntent
+) -> FacilityInteraction | None:
+    """Resolve a selection only against the selected facility's validated interactions."""
+
+    if intent.action is not ActionKind.ENGAGE_INCIDENT or intent.interaction is None:
+        return None
+    location_id = intent.target_location_id
+    if location_id is None:
+        actor = world.adventurers.get(intent.adventurer_id)
+        location_id = actor.location_id if actor is not None else None
+    location = world.locations.get(location_id) if location_id is not None else None
+    if location is None:
+        return None
+    return next(
+        (item for item in location.interactions if item.id == intent.interaction.incident_id),
+        None,
+    )
 
 
 def _intent_description(intent: ActionIntent, world: WorldState) -> str:
@@ -1609,6 +1641,75 @@ def _story_event_text(trace: TickTrace) -> str | None:
     return template.display_text_ko if template is not None else None
 
 
+def _public_incident_effect_facts(event: ActionSucceeded) -> tuple[str, ...]:
+    """Translate only engine-confirmed signed resource deltas for display projection."""
+
+    details = dict(event.details)
+    if len(details) != len(event.details):
+        return ()
+    labels = (
+        ("gold_delta", "골드", 1),
+        ("resource_delta", "자원", 1),
+        ("hp_delta", "HP", 1),
+        ("mp_delta", "MP", 1),
+        ("damage", "HP", -1),
+        ("hp_restored", "HP", 1),
+        ("mp_restored", "MP", 1),
+        ("mp_spent", "MP", -1),
+    )
+    facts: list[str] = []
+    for key, label, direction in labels:
+        value = details.get(key)
+        if value is None:
+            continue
+        try:
+            delta = int(value)
+        except ValueError:
+            continue
+        if not -1_000_000 <= delta <= 1_000_000:
+            continue
+        delta *= direction
+        if delta:
+            facts.append(f"{label} {delta:+d}")
+    return tuple(facts)
+
+
+def _resolved_interaction_for_story(
+    world: WorldState, proposal: ControlledAction, event: DomainEvent
+) -> ResolvedInteraction | None:
+    """Project a successful incident via public labels, never its canonical selection IDs."""
+
+    if not isinstance(event, ActionSucceeded):
+        return None
+    incident = _facility_interaction_for_intent(world, proposal.intent)
+    selection = proposal.intent.interaction
+    if incident is None or selection is None:
+        return None
+    location_id = proposal.intent.target_location_id or world.adventurers[
+        event.adventurer_id
+    ].location_id
+    resident = resident_npc_for_location(location_id)
+    if resident is None or resident.id != incident.npc_id:
+        return None
+    prompts = {prompt.id: prompt for prompt in incident.prompts}
+    labels: list[str] = []
+    for prompt_id, response_id in selection.path:
+        prompt = prompts.get(prompt_id)
+        if prompt is None:
+            return None
+        response = next((item for item in prompt.responses if item.id == response_id), None)
+        if response is None:
+            return None
+        labels.append(f"{prompt.text_ko} → {response.label_ko}")
+    return ResolvedInteraction(
+        title_ko=incident.title_ko,
+        npc_name_ko=resident.display_name,
+        prompt_response_labels_ko=tuple(labels),
+        outcome_ko="성공",
+        effect_facts_ko=_public_incident_effect_facts(event),
+    )
+
+
 def _turn_story_request(
     world: WorldState,
     trace: TickTrace,
@@ -1623,14 +1724,22 @@ def _turn_story_request(
     controllers = {proposal.actor_id: proposal.controller for proposal in trace.proposals}
     proposals = {proposal.actor_id: proposal for proposal in trace.proposals}
     resolved_actions: list[ResolvedAction] = []
+    resolved_interactions: list[ResolvedInteraction] = []
     for event in trace.action_events:
         proposal = proposals[event.adventurer_id]
         actor = world.adventurers[event.adventurer_id]
-        action_story = render_turn_story(
-            world,
-            (event,),
-            controllers={event.adventurer_id: proposal.controller},
-            story_event_text=None,
+        interaction = _resolved_interaction_for_story(world, proposal, event)
+        if interaction is not None:
+            resolved_interactions.append(interaction)
+        action_story = (
+            ()
+            if interaction is not None
+            else render_turn_story(
+                world,
+                (event,),
+                controllers={event.adventurer_id: proposal.controller},
+                story_event_text=None,
+            )
         )
         resolved_actions.append(
             ResolvedAction(
@@ -1688,6 +1797,16 @@ def _turn_story_request(
         resolved_story_event=(
             ResolvedStoryEvent("시간 사건", (event_text,)) if event_text is not None else None
         ),
+        scene_participants=(
+            TurnSceneParticipant(
+                name_ko=resident.display_name,
+                role_ko=resident.role_ko,
+                service_ko=_RESIDENT_SERVICE_KO[resident.service],
+            ),
+        )
+        if (resident := resident_npc_for_location(location.id)) is not None
+        else (),
+        resolved_interactions=tuple(resolved_interactions),
         recent_scene_summaries_ko=recent_scene_summaries_ko,
     )
 

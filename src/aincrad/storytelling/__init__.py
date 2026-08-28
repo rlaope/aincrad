@@ -3,8 +3,10 @@
 from .turn import (
     HermesKimiTurnStoryAdapter,
     ResolvedAction,
+    ResolvedInteraction,
     ResolvedStoryEvent,
     TurnPartyMember,
+    TurnSceneParticipant,
     TurnStoryRequest,
     TurnStoryResult,
     local_turn_story,
@@ -13,8 +15,10 @@ from .turn import (
 __all__ = [
     "HermesKimiTurnStoryAdapter",
     "ResolvedAction",
+    "ResolvedInteraction",
     "ResolvedStoryEvent",
     "TurnPartyMember",
+    "TurnSceneParticipant",
     "TurnStoryRequest",
     "TurnStoryResult",
     "local_turn_story",

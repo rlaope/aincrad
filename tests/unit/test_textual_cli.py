@@ -18,13 +18,20 @@ from aincrad.cli import (
     _perception,
     _prompt_for_intent_textual,
     _run_home_textual,
+    _run_hours,
     _starting_world,
+    _turn_story_request,
 )
-from aincrad.domain import ActionIntent, ActionKind, CharacterClass
+from aincrad.domain import ActionIntent, ActionKind, CharacterClass, InteractionSelection
 from aincrad.domain.identity import CharacterIdentityProfile
 from aincrad.history import HistoryArchive
 from aincrad.persistence import EventLog
-from aincrad.storytelling import TurnStoryRequest, TurnStoryResult
+from aincrad.storytelling import (
+    TurnSceneParticipant,
+    TurnStoryRequest,
+    TurnStoryResult,
+    local_turn_story,
+)
 from aincrad.tui.textual_app import MenuOption
 
 
@@ -861,6 +868,140 @@ def test_textual_home_projects_free_ai_story_after_resolution_without_persisting
     assert records[0].event["schema_version"] == 6
     assert records[0].event["rules_version"] == 5
     assert records[1].event["action_events"][0]["action"] == ActionKind.OBSERVE.value
+
+
+def test_turn_story_request_projects_public_orrin_incident_facts_without_raw_ids() -> None:
+    initial = _starting_world(CharacterClass.WARRIOR, "유리별")
+    selected = ActionIntent(
+        "hero",
+        ActionKind.ENGAGE_INCIDENT,
+        target_location_id="emberfall-shop",
+        interaction=InteractionSelection(
+            "orrin-cracked-crate",
+            (("crate-opening", "inspect-crate"), ("crate-findings", "report-flaw")),
+        ),
+    )
+    result = _run_hours(initial, seed=7, hours=1, chooser=lambda _world, _actor_id: selected)
+    request = _turn_story_request(
+        result.final_state,
+        result.traces[0],
+        CharacterIdentityProfile("차분히 살핀다.", "약속을 지킨다."),
+        (),
+    )
+
+    assert request.selected_actions[0].action_ko == "금 간 화물 상자"
+    assert request.scene_participants[0].name_ko == "Orrin Flint"
+    assert request.scene_participants[0].role_ko == "상점 관리인"
+    resolved = request.resolved_interactions[0]
+    assert resolved.title_ko == "금 간 화물 상자"
+    assert resolved.npc_name_ko == "Orrin Flint"
+    assert tuple(label.rpartition(" → ")[2] for label in resolved.prompt_response_labels_ko) == (
+        "상자를 살펴본다",
+        "금 간 등불을 짚어준다",
+    )
+    assert resolved.outcome_ko == "성공"
+    assert resolved.effect_facts_ko == ("골드 +2",)
+    projected = " ".join(
+        (
+            *resolved.prompt_response_labels_ko,
+            *resolved.effect_facts_ko,
+            request.selected_actions[0].action_ko,
+        )
+    )
+    for hidden in (
+        "orrin-cracked-crate",
+        "crate-opening",
+        "inspect-crate",
+        "report-flaw",
+        "orrin-crate-flaw-reported",
+        "상자 살피기",
+    ):
+        assert hidden not in projected
+    fallback = local_turn_story(request).story_ko
+    assert "Orrin Flint" in fallback
+    assert "금 간 화물 상자" in fallback
+    assert "골드 +2" in fallback
+    assert "일어나지 않았다" not in fallback
+
+
+def test_turn_story_request_includes_orrin_for_regular_shop_conversation() -> None:
+    initial = _starting_world(CharacterClass.WARRIOR, "유리별")
+    selected = ActionIntent(
+        "hero", ActionKind.TALK_ORRIN, target_location_id="emberfall-shop"
+    )
+    result = _run_hours(initial, seed=7, hours=1, chooser=lambda _world, _actor_id: selected)
+    request = _turn_story_request(
+        result.final_state,
+        result.traces[0],
+        CharacterIdentityProfile("차분히 살핀다.", "약속을 지킨다."),
+        (),
+    )
+
+    assert request.scene_participants == (
+        TurnSceneParticipant("Orrin Flint", "상점 관리인", "물품 거래와 보급"),
+    )
+    assert request.resolved_interactions == ()
+
+
+def test_incident_story_provider_prose_cannot_change_replay_or_persisted_log(
+    tmp_path: Path,
+) -> None:
+    prose = "Orrin Flint가 등불빛 아래에서 고개를 끄덕였다."
+
+    def incident_interaction() -> FakeInteraction:
+        incident = _starting_world(CharacterClass.WARRIOR, "유리별").locations[
+            "emberfall-shop"
+        ].interactions[0]
+        return FakeInteraction("emberfall-shop", incident, "inspect-crate", "report-flaw")
+
+    local_log = tmp_path / "local.jsonl"
+    custom_log = tmp_path / "custom.jsonl"
+    _default_run(
+        seed=7,
+        hours=1,
+        headless=False,
+        output=local_log,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+        hero_name="유리별",
+        identity_profile=CharacterIdentityProfile("차분히 살핀다.", "약속을 지킨다."),
+        interaction=incident_interaction(),  # type: ignore[arg-type]
+    )
+    requests: list[TurnStoryRequest] = []
+
+    def custom_story(request: TurnStoryRequest) -> TurnStoryResult:
+        requests.append(request)
+        return TurnStoryResult(prose, "test")
+
+    _default_run(
+        seed=7,
+        hours=1,
+        headless=False,
+        output=custom_log,
+        force=False,
+        character_class=CharacterClass.WARRIOR,
+        hero_name="유리별",
+        identity_profile=CharacterIdentityProfile("차분히 살핀다.", "약속을 지킨다."),
+        story_provider=custom_story,
+        interaction=incident_interaction(),  # type: ignore[arg-type]
+    )
+
+    assert len(requests) == 1
+    assert requests[0].resolved_interactions[0].effect_facts_ko == ("골드 +2",)
+    local_records = EventLog(local_log).verify()
+    custom_records = EventLog(custom_log).verify()
+    assert local_log.read_bytes() == custom_log.read_bytes()
+    assert local_records[0].event["final_world_digest"] == custom_records[0].event[
+        "final_world_digest"
+    ]
+    assert (
+        _default_replay(event_log=local_log, verify_hash=True).summary.status == "해시 검증 완료"
+    )
+    assert (
+        _default_replay(event_log=custom_log, verify_hash=True).summary.status == "해시 검증 완료"
+    )
+    assert prose not in local_log.read_text(encoding="utf-8")
+    assert prose not in custom_log.read_text(encoding="utf-8")
 
 
 def test_textual_ai_delegation_names_the_action_it_actually_resolved(tmp_path: Path) -> None:
