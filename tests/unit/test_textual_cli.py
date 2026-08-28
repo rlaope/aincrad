@@ -14,6 +14,7 @@ from aincrad.cli import (
     _available_intents,
     _default_replay,
     _default_run,
+    _perception,
     _prompt_for_intent_textual,
     _run_home_textual,
     _starting_world,
@@ -46,6 +47,7 @@ class FakeInteraction:
         self.identity_texts = iter(identity_texts)
         self.input_titles: list[str] = []
         self.menus: list[tuple[str, tuple[MenuOption[Any], ...]]] = []
+        self.menu_contexts: list[tuple[str, ...]] = []
         self.text_screens: list[tuple[str, tuple[str, ...]]] = []
         self.story_screens: list[tuple[str, tuple[str, ...]]] = []
         self.story_loading_titles: list[str] = []
@@ -62,6 +64,7 @@ class FakeInteraction:
     ) -> object | None:
         self.timeline.append(title)
         self.menus.append((title, tuple(options)))
+        self.menu_contexts.append(tuple(context))
         return next(self.answers)
 
     def input_text(
@@ -181,6 +184,27 @@ def test_default_run_routes_character_name_and_action_through_textual_widgets() 
     assert interaction.menus[-1][1][-1].label == "AI 판단에 맡기기"
 
 
+def test_perception_at_a_facility_includes_its_public_resident_and_adventurers() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    hero = replace(world.adventurers["hero"], location_id="emberfall-shop")
+    rhea = replace(world.adventurers["rhea-vale"], location_id="emberfall-shop")
+    world = replace(world, adventurers={**world.adventurers, hero.id: hero, rhea.id: rhea})
+
+    perception = _perception(world, hero.id)
+    visible = tuple(dict(entity) for entity in perception.visible_entities)
+
+    assert {"id": "rhea-vale", "kind": "adventurer", "display_name": rhea.name} in visible
+    assert [entity for entity in visible if entity["kind"] == "npc"] == [
+        {
+            "id": "npc-orrin",
+            "kind": "npc",
+            "display_name": "Orrin Flint",
+            "service": "shop",
+        }
+    ]
+    assert all("rules" not in entity and "location_id" not in entity for entity in visible)
+
+
 def test_textual_onboarding_asks_for_natural_language_personality_and_traits(
     tmp_path: Path,
 ) -> None:
@@ -270,6 +294,22 @@ def test_emberfall_action_menu_exposes_town_facilities_instead_of_one_generic_mo
     ]
     assert "이동하기" not in labels
     assert "온천 관찰" in labels
+
+
+def test_textual_facility_action_context_names_the_fixture_resident_in_korean() -> None:
+    world = _starting_world(CharacterClass.WARRIOR, "유리별")
+    hero = replace(world.adventurers["hero"], location_id="emberfall-shop")
+    world = replace(world, adventurers={**world.adventurers, hero.id: hero})
+    local_intent = next(
+        intent
+        for intent in _available_intents(world, hero.id)
+        if intent.action is not ActionKind.MOVE
+    )
+    interaction = FakeInteraction(local_intent)
+
+    _prompt_for_intent_textual(world, hero.id, interaction=interaction)  # type: ignore[arg-type]
+
+    assert "안내: Orrin Flint · 상점 관리인" in interaction.menu_contexts[0]
 
 
 @pytest.mark.parametrize(

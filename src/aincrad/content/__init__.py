@@ -18,7 +18,14 @@ from .fixtures import (
     load_world_fixture,
     validate_world_fixture,
 )
-from .npcs import RuleBasedNPCService, ServiceRequest, ServiceResponse
+from .npcs import (
+    ResidentNPC,
+    RuleBasedNPCService,
+    ServiceRequest,
+    ServiceResponse,
+    resident_npc_for_location,
+    resident_npcs_from_fixture,
+)
 
 __all__ = [
     "action_catalog_from_fixture",
@@ -31,8 +38,11 @@ __all__ = [
     "FloorFixture",
     "LoadedWorldFixture",
     "RuleBasedNPCService",
+    "ResidentNPC",
     "ServiceRequest",
     "ServiceResponse",
+    "resident_npc_for_location",
+    "resident_npcs_from_fixture",
     "TownFixture",
     "WorldFixture",
     "load_packaged_world_fixture",

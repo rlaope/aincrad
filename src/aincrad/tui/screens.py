@@ -36,6 +36,8 @@ def render_status_context(
     party_size: int,
     gold: int,
     resources: int,
+    resident_name: str | None = None,
+    resident_role_ko: str | None = None,
     width: int,
 ) -> tuple[str, ...]:
     """Project the fixed decision context for action and continue screens."""
@@ -48,9 +50,17 @@ def render_status_context(
         f"Lv.{level} · 파티 {party_size}명"
     )
     belongings = f"소지품: 자원 {resources}개 · 소지금 {gold} G"
+    if (resident_name is None) != (resident_role_ko is None):
+        raise ValueError("resident name and role must be provided together")
+    resident_context: tuple[str, ...] = ()
+    if resident_name is not None and resident_role_ko is not None:
+        resident_context = (
+            f"안내: {sanitize_terminal_text(resident_name)} · "
+            f"{sanitize_terminal_text(resident_role_ko)}",
+        )
     if width < 56:
-        return (time_location, vitals, belongings)
-    return (f"{time_location} · {vitals}", belongings)
+        return (time_location, vitals, belongings, *resident_context)
+    return (f"{time_location} · {vitals}", belongings, *resident_context)
 
 
 def _safe_wrapped(text: str, width: int) -> list[str]:

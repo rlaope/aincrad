@@ -27,7 +27,11 @@ from aincrad.commentary import (
     MovementCommentaryResult,
     deterministic_commentary,
 )
-from aincrad.content import available_action_intents, contextual_action_for_intent
+from aincrad.content import (
+    available_action_intents,
+    contextual_action_for_intent,
+    resident_npc_for_location,
+)
 from aincrad.content.events import LIFE_EVENT_CATALOG
 from aincrad.domain import (
     ActionIntent,
@@ -469,10 +473,22 @@ def _available_intents(world: WorldState, actor_id: str) -> tuple[ActionIntent, 
 
 def _perception(world: WorldState, actor_id: str) -> Perception:
     adventurer = world.adventurers[actor_id]
+    resident = resident_npc_for_location(adventurer.location_id)
     visible_entities = tuple(
         {"id": other.id, "kind": "adventurer", "display_name": other.name}
         for other in sorted(world.adventurers.values(), key=lambda item: item.id)
         if other.id != actor_id and other.location_id == adventurer.location_id
+    ) + (
+        (
+            {
+                "id": resident.id,
+                "kind": "npc",
+                "display_name": resident.display_name,
+                "service": resident.service,
+            },
+        )
+        if resident is not None
+        else ()
     )
     return perceive(
         Observation(
@@ -486,6 +502,7 @@ def _perception(world: WorldState, actor_id: str) -> Perception:
                 "resources": adventurer.resources,
             },
             visible_entities=visible_entities,
+            visible_entity_fields=("id", "kind", "display_name", "service"),
         )
     )
 
@@ -686,6 +703,7 @@ def _prompt_for_intent_menu(
     allowed = _available_intents(world, actor_id)
     frame_width = _screen_width()
     adventurer = world.adventurers[actor_id]
+    resident = resident_npc_for_location(adventurer.location_id)
     party_size = sum(
         world.adventurers[member_id].alive
         for member_id in (world.party.member_ids if world.party is not None else (actor_id,))
@@ -703,6 +721,8 @@ def _prompt_for_intent_menu(
         party_size=party_size,
         gold=adventurer.gold,
         resources=adventurer.resources,
+        resident_name=resident.display_name if resident is not None else None,
+        resident_role_ko=resident.role_ko if resident is not None else None,
         width=frame_width,
     )
     choices = tuple(
@@ -750,6 +770,7 @@ def _prompt_for_intent_textual(
     move_intents = tuple(intent for intent in allowed if intent.action is ActionKind.MOVE)
     local_intents = tuple(intent for intent in allowed if intent.action is not ActionKind.MOVE)
     adventurer = world.adventurers[actor_id]
+    resident = resident_npc_for_location(adventurer.location_id)
     party_size = sum(
         world.adventurers[member_id].alive
         for member_id in (world.party.member_ids if world.party is not None else (actor_id,))
@@ -767,6 +788,8 @@ def _prompt_for_intent_textual(
         party_size=party_size,
         gold=adventurer.gold,
         resources=adventurer.resources,
+        resident_name=resident.display_name if resident is not None else None,
+        resident_role_ko=resident.role_ko if resident is not None else None,
         width=80,
     )
     facility_labels = {
@@ -1134,6 +1157,7 @@ def _continue_context(
     if party is None:
         raise ValueError("world has no runtime party")
     hero = world.adventurers[party.selected_hero_id]
+    resident = resident_npc_for_location(hero.location_id)
     day, hour = divmod(world.tick, 24)
     status = render_status_context(
         day=day + 1,
@@ -1147,6 +1171,8 @@ def _continue_context(
         party_size=sum(world.adventurers[item].alive for item in party.member_ids),
         gold=hero.gold,
         resources=hero.resources,
+        resident_name=resident.display_name if resident is not None else None,
+        resident_role_ko=resident.role_ko if resident is not None else None,
         width=width,
     )
     return (*status, "", "방금 끝난 한 시간의 기록을 확인했습니다.")
